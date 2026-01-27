@@ -23,4 +23,5 @@ COPY --from=build /app/target/credit-management-0.0.1-SNAPSHOT.jar app.jar
 EXPOSE 8080
 
 # Start app
-ENTRYPOINT ["sh", "-c", "java -Dserver.port=${PORT:-8080} -Dserver.address=0.0.0.0 -jar /app/app.jar"]
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+
