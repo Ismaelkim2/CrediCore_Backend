@@ -1,5 +1,7 @@
 package com.example.Credit.management.SecConfig;
+import org.springframework.core.env.Environment;
 
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -22,7 +24,7 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
-                .cors(Customizer.withDefaults())
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
@@ -41,7 +43,7 @@ public class SecurityConfig {
 
 
 
-    // Permanent CORS config
+
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
@@ -55,18 +57,10 @@ public class SecurityConfig {
                 "GET", "POST", "PUT", "DELETE", "OPTIONS"
         ));
 
-        config.setAllowedHeaders(List.of(
-                "Authorization",
-                "Content-Type",
-                "Accept"
-        ));
+        config.setAllowedHeaders(List.of("*"));
+        config.setExposedHeaders(List.of("Authorization"));
 
-        // if you return JWT in header
-        config.setExposedHeaders(List.of(
-                "Authorization"
-        ));
-
-        config.setAllowCredentials(true);
+        config.setAllowCredentials(false); // set true ONLY if using cookies
         config.setMaxAge(3600L);
 
         UrlBasedCorsConfigurationSource source =
@@ -75,6 +69,14 @@ public class SecurityConfig {
 
         return source;
     }
+
+    @Bean
+    public ApplicationRunner runner(Environment env) {
+        return args -> {
+            System.out.println(">>> SERVER PORT = " + env.getProperty("server.port"));
+        };
+    }
+
 
 
     // Static file mapping

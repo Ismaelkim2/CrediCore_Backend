@@ -7,8 +7,7 @@ import com.example.Credit.management.Model.Role;
 
 
 @Entity
-@Getter
-@Setter
+@Data
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder

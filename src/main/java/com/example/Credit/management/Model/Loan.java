@@ -1,6 +1,5 @@
 package com.example.Credit.management.Model;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonManagedReference;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
@@ -32,7 +31,6 @@ public class Loan {
     private Long phoneNumber;
     private String location;
 
-    // Default to 0.0 so UI can handle empty state for refunded loans
     @Column(nullable = false)
     private double amount = 0.0;
 
@@ -47,8 +45,6 @@ public class Loan {
 
     private LocalDate applicationDate;
     private LocalDate disbursedDate;
-
-    // Allow dueDate to be null after refund
     private LocalDate dueDate;
 
     @Column(nullable = false)
@@ -60,11 +56,9 @@ public class Loan {
     @Column(nullable = false)
     private double penaltyRate = 0.0;
 
-    // Explicit default to 0.0
     @Column(name = "total_repayable_amount", nullable = false)
     private Double totalRepayableAmount = 0.0;
 
-    // Loan.java
     @Column(name = "last_reminder_sent")
     private LocalDate lastReminderSent;
 
@@ -73,13 +67,10 @@ public class Loan {
 
     private LocalDateTime rejectedAt;
 
-
-    // Transient field used for frontend display
     @Transient
     private Double amountPaid = 0.0;
 
-//    @Transient
-@Column(nullable = false)
+    @Column(nullable = false)
     private Double dueAmount = 0.0;
 
     @OneToMany(
@@ -95,10 +86,29 @@ public class Loan {
     @JoinColumn(name = "account_id")
     private Account account;
 
+    // JSON helper for frontend
     @JsonProperty("accountNumber")
     public String getAccountNumber() {
         return account != null ? account.getAccountNumber() : null;
     }
 
+    // Explicit setters for controller compatibility
+    public void setIdNo(String idNo) { this.idNo = idNo; }
+    public void setPhoneNumber(Long phoneNumber) { this.phoneNumber = phoneNumber; }
+    public void setLocation(String location) { this.location = location; }
+    public void setAmount(Double amount) { this.amount = amount; }
+    public void setDuration(String duration) { this.duration = duration; }
+    public void setStatus(String status) { this.status = status; }
+    public void setApplicationDate(LocalDate applicationDate) { this.applicationDate = applicationDate; }
+    public void setDueDate(LocalDate dueDate) { this.dueDate = dueDate; }
+    public void setAccount(Account account) { this.account = account; }
+    public void setUserImageUrl(String userImageUrl) { this.userImageUrl = userImageUrl; }
+    public String getIdNo() { return idNo; }
 
+    // Explicit getters for controller
+    public Double getAmount() { return amount; }
+    public Double getDueAmount() { return dueAmount; }
+    public String getStatus() { return status; }
+    public Long getId() { return id; }
+    public String getEmail() { return email; }
 }

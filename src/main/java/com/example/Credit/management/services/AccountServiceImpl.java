@@ -8,12 +8,13 @@ import com.example.Credit.management.Repository.LoanRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import java.time.LocalDateTime;
 import java.util.*;
 
 @Service
-public class AccountServiceImpl implements AccountService {
+public class AccountServiceImpl implements AccountService, WebMvcConfigurer {
 
     @Autowired
     private AccountRepository accountRepository;
@@ -21,7 +22,7 @@ public class AccountServiceImpl implements AccountService {
     @Autowired
     private LoanRepository loanRepository;
 
-    @Autowired
+    @Autowired(required = false)
     private EmailService emailService;
 
     private String generateAccountNumber() {
@@ -46,11 +47,13 @@ public class AccountServiceImpl implements AccountService {
 
         Account saved = accountRepository.save(account);
 
-        emailService.sendAccountCreatedEmail(
-                saved.getEmail(),
-                saved.getFullName(),
-                saved.getAccountNumber()
-        );
+        if (emailService != null) {
+            emailService.sendAccountCreatedEmail(
+                    saved.getEmail(),
+                    saved.getFullName(),
+                    saved.getAccountNumber()
+            );
+        }
 
         return saved;
     }
@@ -98,14 +101,12 @@ public class AccountServiceImpl implements AccountService {
 
         if (sender.getBalance() < amount) return false;
 
-        // ✅ Only modify actual balances
         sender.setBalance(sender.getBalance() - amount);
         receiver.setBalance(receiver.getBalance() + amount);
 
         accountRepository.save(sender);
         accountRepository.save(receiver);
 
-        // Record transactions for both
         Map<String, Object> debit = new HashMap<>();
         debit.put("date", LocalDateTime.now());
         debit.put("description", "Transfer to " + receiver.getAccountNumber());
@@ -146,7 +147,6 @@ public class AccountServiceImpl implements AccountService {
         List<Loan> allLoans = loanRepository.findByIdNo(String.valueOf(idNo));
         if (allLoans == null || allLoans.isEmpty()) return 0.0;
 
-        // ✅ Only include loans that are not repaid/cleared
         return allLoans.stream()
                 .filter(loan -> loan.getStatus() != null &&
                         !"repaid".equalsIgnoreCase(loan.getStatus()) &&
@@ -169,12 +169,9 @@ public class AccountServiceImpl implements AccountService {
 
     @Override
     public Account getAccountByNationalId(Long idNo) {
-        String nationalIdStr = String.valueOf(idNo);
-        return accountRepository.findByNationalId(nationalIdStr)
-                .orElse(null); // or throw exception if you prefer
+        return accountRepository.findByNationalId(String.valueOf(idNo))
+                .orElse(null);
     }
-
-
 
     @Override
     public AccountDTO toDTO(Account account) {
@@ -185,11 +182,9 @@ public class AccountServiceImpl implements AccountService {
         dto.setEmail(account.getEmail());
         dto.setBalance(account.getBalance());
 
-        // Get unpaid loans
         Double unpaidBorrowed = getBorrowedAmount(account.getAccountNumber());
         dto.setBorrowedAmount(unpaidBorrowed);
 
-        // ✅ Calculate net balance for display ONLY (do not persist)
         double net = (account.getBalance() != null ? account.getBalance() : 0.0)
                 + (unpaidBorrowed != null ? unpaidBorrowed : 0.0);
         dto.setNetBalance(net);
@@ -197,10 +192,8 @@ public class AccountServiceImpl implements AccountService {
         dto.setAccountNumber(account.getAccountNumber());
         dto.setImageUrl(account.getImageUrl());
 
-        // ✅ Do NOT update or save account balance here
         return dto;
     }
-
 
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
@@ -209,7 +202,7 @@ public class AccountServiceImpl implements AccountService {
 
     @Override
     public List<Account> searchAccountsByNationalId(String nationalId) {
-        if(nationalId == null || nationalId.isBlank()) return Collections.emptyList();
+        if (nationalId == null || nationalId.isBlank()) return Collections.emptyList();
         return accountRepository.findByNationalIdContaining(nationalId);
     }
 }

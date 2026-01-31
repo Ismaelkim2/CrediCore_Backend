@@ -16,4 +16,7 @@ public class RepaymentDTO {
     private String phoneNumber;
     private String location;
     private String accountNumber;
+    private String paymentMethod;
+// use @Data or explicit getters
+
 }

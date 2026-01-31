@@ -5,21 +5,31 @@ primary_region = "sin"
 dockerfile = "Dockerfile"
 
 [env]
+# Spring Boot profile
 SPRING_PROFILES_ACTIVE = "prod"
+
+# Server config
+SERVER_PORT = "8080"
+SERVER_ADDRESS = "0.0.0.0"
+
+# Database config
+SPRING_DATASOURCE_URL = "jdbc:postgresql://db.ceizaesebtkxfggfofpd.supabase.co:5432/postgres?sslmode=require"
+SPRING_DATASOURCE_USERNAME = "postgres"
 
 [[services]]
 internal_port = 8080
 protocol = "tcp"
 
 [[services.ports]]
-port = 80
 handlers = ["http"]
+port = 80
 
 [[services.ports]]
-port = 443
 handlers = ["tls", "http"]
+port = 443
 
-[[services.tcp_checks]]
-interval = "15s"
-timeout = "2s"
-grace_period = "30s"
+[[services.http_checks]]
+path = "/actuator/health"
+interval = "10s"
+timeout = "5s"
+grace_period = "120s"
