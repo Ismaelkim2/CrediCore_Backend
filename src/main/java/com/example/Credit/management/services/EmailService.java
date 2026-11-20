@@ -1,22 +1,87 @@
+
 package com.example.Credit.management.services;
 
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.MailException;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Service;
 
 @Service
-@ConditionalOnProperty(
-        name = "email.enabled",
-        havingValue = "true"
-)
 public class EmailService {
 
-    @Autowired
-    private JavaMailSender mailSender;
+    private final ObjectProvider<JavaMailSender> mailSenderProvider;
 
+    @Value("${email.enabled:false}")
+    private boolean emailEnabled;
+
+    @Value("${spring.mail.username:}")
+    private String mailUsername;
+
+    public EmailService(
+            ObjectProvider<JavaMailSender> mailSenderProvider
+    ) {
+        this.mailSenderProvider = mailSenderProvider;
+    }
+
+    // =========================================================
+    // CENTRAL EMAIL DELIVERY
+    // =========================================================
+
+    private void deliverEmail(
+            String to,
+            String subject,
+            String body
+    ) {
+
+        // Email delivery is optional.
+        if (!emailEnabled) {
+            System.out.println(
+                    "CREDITBANK — EMAIL DISABLED. Skipping email to: " + to
+            );
+            return;
+        }
+
+        JavaMailSender mailSender =
+                mailSenderProvider.getIfAvailable();
+
+        if (mailSender == null) {
+            System.err.println(
+                    "CREDITBANK — EMAIL SERVICE UNAVAILABLE."
+            );
+            return;
+        }
+
+        try {
+
+            SimpleMailMessage message = new SimpleMailMessage();
+
+            message.setFrom(
+                    mailUsername != null && !mailUsername.isBlank()
+                            ? mailUsername
+                            : "noreply@example.com"
+            );
+
+            message.setTo(to);
+            message.setSubject(subject);
+            message.setText(body);
+
+            mailSender.send(message);
+
+            System.out.println(
+                    "CREDITBANK — EMAIL SENT SUCCESSFULLY: " + to
+            );
+
+        } catch (MailException e) {
+
+            System.err.println(
+                    "CREDITBANK — EMAIL DELIVERY FAILED: " + e.getMessage()
+            );
+
+            // Email failure must never interrupt core business operations.
+        }
+    }
 
     // =========================================================
     // ACCOUNT CREATED EMAIL
@@ -28,52 +93,18 @@ public class EmailService {
             String accountNumber
     ) {
 
-        try {
+        String subject = "Account Created Successfully";
 
-            SimpleMailMessage message = new SimpleMailMessage();
+        String body =
+                "Dear " + fullName + ",\n\n" +
+                        "Your account has been created successfully.\n" +
+                        "Account Number: " + accountNumber + "\n\n" +
+                        "Thank you for choosing our services.\n\n" +
+                        "Best regards,\n" +
+                        "Credit Management Team";
 
-            message.setFrom("ismaelkim2@gmail.com");
-            message.setTo(to);
-            message.setSubject("Account Created Successfully");
-
-            message.setText(
-                    "Dear " + fullName + ",\n\n" +
-                            "Your account has been created successfully.\n" +
-                            "Account Number: " + accountNumber + "\n\n" +
-                            "Thank you for choosing our services.\n\n" +
-                            "Best regards,\n" +
-                            "Credit Management Team"
-            );
-
-            mailSender.send(message);
-
-            System.out.println(
-                    "CREDITBANK — ACCOUNT EMAIL SENT: " + to
-            );
-
-        } catch (MailException e) {
-
-            // =================================================
-            // IMPORTANT:
-            // EMAIL FAILURE MUST NEVER CANCEL ACCOUNT CREATION
-            // =================================================
-
-            System.err.println(
-                    "CREDITBANK — ACCOUNT EMAIL FAILED"
-            );
-
-            System.err.println(
-                    "Recipient: " + to
-            );
-
-            System.err.println(
-                    "Reason: " + e.getMessage()
-            );
-
-            // DO NOT THROW THE EXCEPTION
-        }
+        deliverEmail(to, subject, body);
     }
-
 
     // =========================================================
     // GENERAL EMAIL
@@ -85,64 +116,8 @@ public class EmailService {
             String body
     ) {
 
-        try {
-
-            SimpleMailMessage message = new SimpleMailMessage();
-
-            message.setFrom("ismaelkim2@gmail.com");
-            message.setTo(to);
-            message.setSubject(subject);
-            message.setText(body);
-
-            mailSender.send(message);
-
-            System.out.println(
-                    "CREDITBANK — EMAIL SENT SUCCESSFULLY"
-            );
-
-            System.out.println(
-                    "Recipient: " + to
-            );
-
-        } catch (MailException e) {
-
-            // =================================================
-            // CRITICAL:
-            // EMAIL FAILURE MUST NOT FAIL THE LOAN APPLICATION
-            // =================================================
-
-            System.err.println(
-                    "=========================================="
-            );
-
-            System.err.println(
-                    "CREDITBANK — EMAIL DELIVERY FAILED"
-            );
-
-            System.err.println(
-                    "Recipient: " + to
-            );
-
-            System.err.println(
-                    "Subject: " + subject
-            );
-
-            System.err.println(
-                    "Reason: " + e.getMessage()
-            );
-
-            System.err.println(
-                    "Loan/application processing will CONTINUE."
-            );
-
-            System.err.println(
-                    "=========================================="
-            );
-
-            // DO NOT THROW THE EXCEPTION
-        }
+        deliverEmail(to, subject, body);
     }
-
 
     // =========================================================
     // LOAN REMINDER EMAIL
@@ -154,53 +129,17 @@ public class EmailService {
             double dueAmount
     ) {
 
-        try {
+        String subject = "Loan Payment Reminder";
 
-            String subject = "Loan Payment Reminder";
+        String body =
+                "Dear " + borrowerName + ",\n\n" +
+                        "This is a friendly reminder about your " +
+                        "outstanding loan payment.\n" +
+                        "Outstanding Amount: Ksh " + dueAmount + "\n\n" +
+                        "Kindly make the payment at your earliest convenience.\n\n" +
+                        "Best regards,\n" +
+                        "Credit Management Team";
 
-            String body =
-                    "Dear " + borrowerName + ",\n\n" +
-                            "This is a friendly reminder about your " +
-                            "outstanding loan payment.\n" +
-                            "Outstanding Amount: Ksh " + dueAmount + "\n\n" +
-                            "Kindly make the payment at your earliest convenience.\n\n" +
-                            "Best regards,\n" +
-                            "Credit Management Team";
-
-
-            SimpleMailMessage message =
-                    new SimpleMailMessage();
-
-            message.setFrom("ismaelkim2@gmail.com");
-            message.setTo(to);
-            message.setSubject(subject);
-            message.setText(body);
-
-            mailSender.send(message);
-
-            System.out.println(
-                    "CREDITBANK — LOAN REMINDER SENT: " + to
-            );
-
-        } catch (MailException e) {
-
-            // =================================================
-            // REMINDER FAILURE MUST NOT BREAK OTHER OPERATIONS
-            // =================================================
-
-            System.err.println(
-                    "CREDITBANK — LOAN REMINDER EMAIL FAILED"
-            );
-
-            System.err.println(
-                    "Recipient: " + to
-            );
-
-            System.err.println(
-                    "Reason: " + e.getMessage()
-            );
-
-            // DO NOT THROW THE EXCEPTION
-        }
+        deliverEmail(to, subject, body);
     }
 }
