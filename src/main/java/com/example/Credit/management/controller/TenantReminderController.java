@@ -202,6 +202,8 @@ public class TenantReminderController {
         return service.getCalendarEvents(
                 actor(authentication),
                 from,
+
+
                 to
         );
     }
