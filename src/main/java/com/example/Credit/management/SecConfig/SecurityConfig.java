@@ -74,7 +74,8 @@ public class SecurityConfig {
 
         config.setAllowedOrigins(List.of(
                 "http://localhost:4200",
-                "https://credit-management1.netlify.app"
+                "https://credit-management1.netlify.app",
+                "https://creditbank-frontend.onrender.com"
         ));
 
         config.setAllowedMethods(List.of(
