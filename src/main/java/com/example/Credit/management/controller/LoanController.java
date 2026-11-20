@@ -1,233 +1,985 @@
 package com.example.Credit.management.controller;
 
-import com.example.Credit.management.DTO.LoanRejectRequest;
-import com.example.Credit.management.DTO.RepaymentDTO;
+import com.example.Credit.management.DTO.AccountDTO;
 import com.example.Credit.management.DTO.RepaymentTransactionDTO;
 import com.example.Credit.management.Model.Account;
 import com.example.Credit.management.Model.Loan;
-import com.example.Credit.management.Model.Notification;
-import com.example.Credit.management.Repository.LoanRepository;
-import com.example.Credit.management.services.*;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.example.Credit.management.Model.Staff;
+import com.example.Credit.management.Repository.StaffRepository;
+import com.example.Credit.management.services.AccountServiceImpl;
+import com.example.Credit.management.services.LoanService;
+import com.example.Credit.management.services.RepaymentService;
+import com.example.Credit.management.services.TransactionService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.server.ResponseStatusException;
 
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDate;
-import java.util.*;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/loans")
 public class LoanController {
 
-    @Autowired private LoanService loanService;
-    @Autowired private RepaymentService repaymentService;
-    @Autowired private AccountServiceImpl accountService;
-    @Autowired private LoanRiskService loanRiskService;
-    @Autowired private NotificationService notificationService;
-    @Autowired private SmsService smsService;
-    @Autowired private EmailService emailService;
-    @Autowired private LoanRepository loanRepository;
+    // =========================================================
+    // SERVICES
+    // =========================================================
+
+    @Autowired
+    private LoanService loanService;
+
+    @Autowired
+    private RepaymentService repaymentService;
+
+    @Autowired
+    private AccountServiceImpl accountService;
+
+    @Autowired
+    private StaffRepository staffRepository;
+
+    @Autowired
+    private TransactionService transactionService;
+
+
+    // =========================================================
+    // GET ALL LOANS
+    // =========================================================
 
     @GetMapping
-    public List<Loan> getAllLoans() {
-        return loanService.getAllLoans()
-                .stream()
-                .map(repaymentService::attachLiveDueAmount)
-                .toList();
+    public ResponseEntity<List<Loan>> getAllLoans() {
+
+        List<Loan> loans =
+                loanService.getAllLoans();
+
+        List<Loan> enrichedLoans =
+                loans.stream()
+                        .map(repaymentService::attachLiveDueAmount)
+                        .toList();
+
+        return ResponseEntity.ok(enrichedLoans);
     }
+
+
+    // =========================================================
+    // SEARCH ACCOUNT BY NATIONAL ID
+    // =========================================================
 
     @GetMapping("/search/{idNo}")
-    public ResponseEntity<Account> searchAccount(@PathVariable String idNo) {
-        Account account = accountService.getByNationalId(idNo);
-        if (account == null) return ResponseEntity.notFound().build();
-        return ResponseEntity.ok(account);
-    }
+    public ResponseEntity<Account> searchAccount(
+            @PathVariable String idNo
+    ) {
 
-    @GetMapping("/by-nationalId/{idNo}")
-    public ResponseEntity<Loan> getLoanByNationalId(@PathVariable String idNo) {
-        Optional<Loan> loan = loanRepository.findTopByIdNoOrderByApplicationDateDesc(idNo);
+        if (idNo == null || idNo.isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
 
-        if (loan.isEmpty()) {
+        Account account =
+                accountService.getByNationalId(
+                        idNo.trim()
+                );
+
+        if (account == null) {
             return ResponseEntity.notFound().build();
         }
 
-        Loan loanWithDue = repaymentService.attachLiveDueAmount(loan.get());
-        return ResponseEntity.ok(loanWithDue);
+        return ResponseEntity.ok(account);
     }
 
 
+    // =========================================================
+    // GET LOAN BY ID
+    // =========================================================
 
-    // ====================== GET ALL LOANS WITH LIVE DUE ======================
-    @GetMapping("/all-with-due")
-    public List<Loan> getAllLoansWithDue() {
-        List<Loan> loans = loanService.getAllLoans();
-        // Attach live due amounts to all loans
-        List<Loan> loansWithDue = new ArrayList<>();
-        for (Loan loan : loans) {
-            loansWithDue.add(repaymentService.attachLiveDueAmount(loan));
-        }
-        return loansWithDue;
-    }
-
-    // ====================== GET LOAN BY ID WITH LIVE DUE ======================
     @GetMapping("/{id}")
-    public ResponseEntity<Loan> getLoanById(@PathVariable Long id) {
-        return loanRepository.findById(id)
-                .map(loan -> ResponseEntity.ok(repaymentService.attachLiveDueAmount(loan)))
-                .orElse(ResponseEntity.notFound().build());
-    }
-
-    // ====================== CREATE LOAN WITH IMAGE ======================
-    @PostMapping(value = "/add-with-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<?> createLoanWithImage(
-            @RequestParam String applicantName,
-            @RequestParam Long idNo,
-            @RequestParam Long phoneNumber,
-            @RequestParam String location,
-            @RequestParam Double amount,
-            @RequestParam String duration,
-            @RequestParam(required = false) String applicationDate,
-            @RequestParam(required = false) String dueDate,
-            @RequestParam(required = false) MultipartFile file
+    public ResponseEntity<Loan> getLoanById(
+            @PathVariable Long id
     ) {
+
+        if (id == null || id <= 0) {
+            return ResponseEntity.badRequest().build();
+        }
+
         try {
-            Account account = accountService.getByNationalId(String.valueOf(idNo));
-            if (account == null)
-                return ResponseEntity.badRequest().body(Map.of("message", "Account not found"));
 
-            double limit = loanRiskService.calculateLoanLimit(account);
-            if (amount > limit)
-                return ResponseEntity.badRequest().body(Map.of(
-                        "message", "Requested amount exceeds risk-based limit",
-                        "eligibleLimit", limit
-                ));
+            Loan loan =
+                    loanService.getLoanById(id);
 
-            Loan loan = new Loan();
-            loan.setApplicantName(applicantName);
-            loan.setIdNo(String.valueOf(idNo));
-            loan.setPhoneNumber(phoneNumber);
-            loan.setLocation(location);
-            loan.setAmount(amount);
-            loan.setDuration(duration);
-            loan.setAccount(account);
-            loan.setEmail(account.getEmail());
-            loan.setApplicationDate(applicationDate != null ? LocalDate.parse(applicationDate) : LocalDate.now());
-            if (dueDate != null) loan.setDueDate(LocalDate.parse(dueDate));
-            loan.setStatus("AWAITING_AUTHORIZATION");
-
-            // Handle file upload
-            if (file != null && !file.isEmpty()) {
-                String filename = System.currentTimeMillis() + "_" + StringUtils.cleanPath(file.getOriginalFilename());
-                Path uploadPath = Paths.get("uploads/loan_docs/");
-                if (!Files.exists(uploadPath)) Files.createDirectories(uploadPath);
-                Path filePath = uploadPath.resolve(filename);
-                Files.copy(file.getInputStream(), filePath, StandardCopyOption.REPLACE_EXISTING);
-                loan.setUserImageUrl(filePath.toString());
+            if (loan == null) {
+                return ResponseEntity.notFound().build();
             }
 
-            Loan savedLoan = loanService.saveLoan(loan);
-            return ResponseEntity.ok(savedLoan);
+            Loan enrichedLoan =
+                    repaymentService.attachLiveDueAmount(
+                            loan
+                    );
+
+            return ResponseEntity.ok(enrichedLoan);
 
         } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("message", "Loan creation failed: " + e.getMessage()));
+
+            return ResponseEntity
+                    .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .build();
         }
     }
 
-    // ====================== UPDATE LOAN STATUS ======================
-    @PatchMapping("/{id}/status")
-    public ResponseEntity<Loan> updateStatus(@PathVariable Long id, @RequestBody StatusRequest request) {
-        Loan updated = loanService.updateLoanStatus(id, request.getStatus());
-        return ResponseEntity.ok(updated);
+
+    // =========================================================
+    // CREATE LOAN WITH IMAGE
+    //
+    // FRONTEND CONTROLS ONLY:
+    //
+    // - applicant/application information
+    // - requested amount
+    // - optional profile image
+    //
+    // BACKEND CONTROLS:
+    //
+    // - verified borrower financial information
+    // - eligibility
+    // - eligible amount
+    // - risk
+    // - underwriting score
+    // - approved duration
+    // - interest rate
+    // - repayment amount
+    // - due date
+    // - approval/rejection
+    // - application status
+    // =========================================================
+
+    @PostMapping(
+            value = "/add-with-image",
+            consumes = MediaType.MULTIPART_FORM_DATA_VALUE
+    )
+    public ResponseEntity<?> createLoanWithImage(
+
+            @RequestParam("applicantName")
+            String applicantName,
+
+            @RequestParam("idNo")
+            String idNo,
+
+            @RequestParam("phoneNumber")
+            String phoneNumber,
+
+            @RequestParam("location")
+            String location,
+
+            @RequestParam("amount")
+            Double amount,
+
+            @RequestParam(
+                    value = "email",
+                    required = false
+            )
+            String email,
+
+            @RequestParam(
+                    value = "applicationDate",
+                    required = false
+            )
+            String applicationDate,
+
+            @RequestParam(
+                    value = "file",
+                    required = false
+            )
+            MultipartFile file
+    ) {
+
+        try {
+
+            // =====================================================
+            // 1. BASIC INPUT VALIDATION
+            // =====================================================
+
+            if (idNo == null || idNo.isBlank()) {
+
+                return ResponseEntity
+                        .badRequest()
+                        .body(
+                                Map.of(
+                                        "success",
+                                        false,
+                                        "message",
+                                        "National ID is required."
+                                )
+                        );
+            }
+
+            if (amount == null
+                    || amount.isNaN()
+                    || amount.isInfinite()
+                    || amount <= 0) {
+
+                return ResponseEntity
+                        .badRequest()
+                        .body(
+                                Map.of(
+                                        "success",
+                                        false,
+                                        "message",
+                                        "Requested loan amount must be greater than zero."
+                                )
+                        );
+            }
+
+            // =====================================================
+            // 2. LOAD VERIFIED ACCOUNT
+            // =====================================================
+
+            AccountDTO accountDTO =
+                    accountService
+                            .getAccountDTOByNationalId(
+                                    idNo.trim()
+                            );
+
+            if (accountDTO == null) {
+
+                return ResponseEntity
+                        .badRequest()
+                        .body(
+                                Map.of(
+                                        "success",
+                                        false,
+                                        "message",
+                                        "No customer account was found for the supplied National ID."
+                                )
+                        );
+            }
+
+            Account account =
+                    accountService
+                            .getByNationalId(
+                                    idNo.trim()
+                            );
+
+            if (account == null) {
+
+                return ResponseEntity
+                        .badRequest()
+                        .body(
+                                Map.of(
+                                        "success",
+                                        false,
+                                        "message",
+                                        "Customer account could not be loaded."
+                                )
+                        );
+            }
+
+            // =====================================================
+            // 3. BUILD LOAN REQUEST
+            //
+            // IMPORTANT:
+            //
+            // Do NOT accept or set:
+            //
+            // - duration
+            // - interestRate
+            // - riskScore
+            // - dueDate
+            // - totalRepayableAmount
+            // - dueAmount
+            // - eligibleAmount
+            // - repayment terms
+            //
+            // LoanService / LoanEligibilityService owns these.
+            // =====================================================
+
+            Loan loan =
+                    new Loan();
+
+            loan.setApplicantName(
+                    applicantName != null
+                            ? applicantName.trim()
+                            : null
+            );
+
+            loan.setPhoneNumber(
+                    phoneNumber != null
+                            ? phoneNumber.trim()
+                            : null
+            );
+
+            loan.setLocation(
+                    location != null
+                            ? location.trim()
+                            : null
+            );
+
+            loan.setAmount(
+                    amount
+            );
+
+            loan.setEmail(
+                    email != null && !email.isBlank()
+                            ? email.trim()
+                            : account.getEmail()
+            );
+
+            loan.setAccount(
+                    account
+            );
+
+            // =====================================================
+            // 4. APPLICATION DATE
+            // =====================================================
+
+            LocalDate parsedApplicationDate =
+                    LocalDate.now();
+
+            if (applicationDate != null
+                    && !applicationDate.isBlank()) {
+
+                try {
+
+                    parsedApplicationDate =
+                            LocalDate.parse(
+                                    applicationDate.trim()
+                            );
+
+                } catch (Exception e) {
+
+                    return ResponseEntity
+                            .badRequest()
+                            .body(
+                                    Map.of(
+                                            "success",
+                                            false,
+                                            "message",
+                                            "Invalid application date. Expected format: yyyy-MM-dd."
+                                    )
+                            );
+                }
+            }
+
+            loan.setApplicationDate(
+                    parsedApplicationDate
+            );
+
+            // =====================================================
+            // 5. PROCESS OPTIONAL PROFILE IMAGE
+            // =====================================================
+
+            if (file != null
+                    && !file.isEmpty()) {
+
+                String originalFilename =
+                        file.getOriginalFilename();
+
+                String safeFilename =
+                        StringUtils.cleanPath(
+                                originalFilename != null
+                                        ? originalFilename
+                                        : "profile-image"
+                        );
+
+                /*
+                 * Prevent directory traversal through a malicious
+                 * multipart filename.
+                 */
+                if (safeFilename.contains("..")) {
+
+                    return ResponseEntity
+                            .badRequest()
+                            .body(
+                                    Map.of(
+                                            "success",
+                                            false,
+                                            "message",
+                                            "Invalid image filename."
+                                    )
+                            );
+                }
+
+                String filename =
+                        System.currentTimeMillis()
+                                + "_"
+                                + safeFilename;
+
+                Path uploadPath =
+                        Paths.get(
+                                "uploads/profile/"
+                        );
+
+                if (!Files.exists(uploadPath)) {
+
+                    Files.createDirectories(
+                            uploadPath
+                    );
+                }
+
+                Path targetPath =
+                        uploadPath.resolve(
+                                filename
+                        );
+
+                Files.copy(
+                        file.getInputStream(),
+                        targetPath,
+                        StandardCopyOption.REPLACE_EXISTING
+                );
+
+                account.setImageUrl(
+                        "uploads/profile/"
+                                + filename
+                );
+
+                accountService.save(
+                        account
+                );
+            }
+
+            // =====================================================
+            // 6. BACKEND AUTHORITATIVE UNDERWRITING
+            //
+            // LoanService.saveLoan() now performs:
+            //
+            // - account verification
+            // - financial profile validation
+            // - eligibility assessment
+            // - affordability calculation
+            // - risk calculation
+            // - eligible amount
+            // - backend-approved duration
+            // - interest rate
+            // - repayment terms
+            // - decision
+            // - approval workflow
+            //
+            // The controller does NOT duplicate underwriting logic.
+            // =====================================================
+
+            Loan savedLoan =
+                    loanService.saveLoan(
+                            loan
+                    );
+
+            // =====================================================
+            // 7. RECORD APPLICATION TRANSACTION
+            // =====================================================
+
+            transactionService
+                    .recordLoanApplication(
+                            savedLoan
+                    );
+
+            // =====================================================
+            // 8. RETURN BACKEND-AUTHORITATIVE RESULT
+            // =====================================================
+
+            return ResponseEntity.ok(
+                    savedLoan
+            );
+
+        } catch (IllegalArgumentException e) {
+
+            return ResponseEntity
+                    .badRequest()
+                    .body(
+                            Map.of(
+                                    "success",
+                                    false,
+                                    "message",
+                                    e.getMessage() != null
+                                            ? e.getMessage()
+                                            : "Invalid loan application."
+                            )
+                    );
+
+        } catch (Exception e) {
+
+            e.printStackTrace();
+
+            return ResponseEntity
+                    .status(
+                            HttpStatus.INTERNAL_SERVER_ERROR
+                    )
+                    .body(
+                            Map.of(
+                                    "success",
+                                    false,
+                                    "message",
+                                    e.getMessage() != null
+                                            ? e.getMessage()
+                                            : "Loan creation failed.",
+                                    "exception",
+                                    e.getClass()
+                                            .getSimpleName()
+                            )
+                    );
+        }
     }
 
-    // ====================== DELETE LOAN ======================
+
+    // =========================================================
+    // UPDATE LOAN WITH IMAGE
+    //
+    // IMPORTANT:
+    //
+    // NO DURATION
+    // NO INTEREST RATE
+    // NO RISK SCORE
+    // NO DUE DATE
+    //
+    // The backend reassesses the application.
+    // =========================================================
+
+    @PutMapping(
+            value = "/{id}/update-with-image",
+            consumes = MediaType.MULTIPART_FORM_DATA_VALUE
+    )
+    public ResponseEntity<?> updateLoanWithImage(
+
+            @PathVariable Long id,
+
+            @RequestParam("applicantName")
+            String applicantName,
+
+            @RequestParam("idNo")
+            String idNo,
+
+            @RequestParam("phoneNumber")
+            String phoneNumber,
+
+            @RequestParam("location")
+            String location,
+
+            @RequestParam("amount")
+            Double amount,
+
+            @RequestParam("email")
+            String email,
+
+            @RequestParam("monthlyIncome")
+            Double monthlyIncome,
+
+            @RequestParam(
+                    value = "monthlyExpenses",
+                    required = false
+            )
+            Double monthlyExpenses,
+
+            @RequestParam("applicationDate")
+            String applicationDate,
+
+            @RequestParam(
+                    value = "file",
+                    required = false
+            )
+            MultipartFile file
+    ) {
+
+        try {
+
+            if (id == null || id <= 0) {
+
+                return ResponseEntity
+                        .badRequest()
+                        .body(
+                                Map.of(
+                                        "success",
+                                        false,
+                                        "message",
+                                        "A valid loan ID is required."
+                                )
+                        );
+            }
+
+            if (idNo == null || idNo.isBlank()) {
+
+                return ResponseEntity
+                        .badRequest()
+                        .body(
+                                Map.of(
+                                        "success",
+                                        false,
+                                        "message",
+                                        "National ID is required."
+                                )
+                        );
+            }
+
+            if (amount == null
+                    || amount.isNaN()
+                    || amount.isInfinite()
+                    || amount <= 0) {
+
+                return ResponseEntity
+                        .badRequest()
+                        .body(
+                                Map.of(
+                                        "success",
+                                        false,
+                                        "message",
+                                        "Requested loan amount must be greater than zero."
+                                )
+                        );
+            }
+
+            /*
+             * Monthly income and expenses are passed through to the
+             * service for reassessment.
+             *
+             * The service remains authoritative and may replace
+             * these values with verified account information.
+             */
+            Loan updatedLoan =
+                    loanService.updateLoanWithImage(
+
+                            id,
+
+                            applicantName,
+
+                            idNo,
+
+                            phoneNumber,
+
+                            location,
+
+                            amount,
+
+                            monthlyIncome,
+
+                            monthlyExpenses,
+
+                            applicationDate,
+
+                            email,
+
+                            null,
+
+                            file
+                    );
+
+            return ResponseEntity.ok(
+                    updatedLoan
+            );
+
+        } catch (IllegalArgumentException e) {
+
+            return ResponseEntity
+                    .badRequest()
+                    .body(
+                            Map.of(
+                                    "success",
+                                    false,
+                                    "message",
+                                    e.getMessage() != null
+                                            ? e.getMessage()
+                                            : "Invalid loan update."
+                            )
+                    );
+
+        } catch (Exception e) {
+
+            e.printStackTrace();
+
+            return ResponseEntity
+                    .status(
+                            HttpStatus.BAD_REQUEST
+                    )
+                    .body(
+                            Map.of(
+                                    "success",
+                                    false,
+                                    "message",
+                                    e.getMessage() != null
+                                            ? e.getMessage()
+                                            : "Loan update failed.",
+                                    "exception",
+                                    e.getClass()
+                                            .getSimpleName()
+                            )
+                    );
+        }
+    }
+
+
+    // =========================================================
+    // GET LOANS BY NATIONAL ID
+    // =========================================================
+
+    @GetMapping("/by-nationalId/{idNo}")
+    public ResponseEntity<List<Loan>> getLoansByNationalId(
+            @PathVariable String idNo
+    ) {
+
+        if (idNo == null || idNo.isBlank()) {
+
+            return ResponseEntity.ok(
+                    Collections.emptyList()
+            );
+        }
+
+        Account account =
+                accountService.getByNationalId(
+                        idNo.trim()
+                );
+
+        if (account == null) {
+
+            return ResponseEntity.ok(
+                    Collections.emptyList()
+            );
+        }
+
+        List<Loan> loans =
+                loanService.getLoansByAccount(
+                        account.getId()
+                );
+
+        List<Loan> enrichedLoans =
+                loans.stream()
+                        .map(repaymentService::attachLiveDueAmount)
+                        .toList();
+
+        return ResponseEntity.ok(
+                enrichedLoans
+        );
+    }
+
+
+    // =========================================================
+    // DELETE LOAN
+    // =========================================================
+
     @DeleteMapping("/{id}")
-    public ResponseEntity<?> deleteLoan(@PathVariable Long id) {
-        loanService.deleteLoan(id);
-        return ResponseEntity.ok(Map.of("message", "Loan deleted successfully"));
-    }
+    public ResponseEntity<?> deleteLoan(
+            @PathVariable Long id
+    ) {
 
-    // ====================== GET RISK LIMIT ======================
-    @GetMapping("/risk-limit/{idNo}")
-    public ResponseEntity<Map<String, Object>> getRiskLimit(@PathVariable Long idNo) {
-        Account account = accountService.getAccountByNationalId(idNo);
-        if (account == null) return ResponseEntity.notFound().build();
-        double limit = loanRiskService.calculateLoanLimit(account);
-        return ResponseEntity.ok(Map.of("limit", limit));
-    }
+        try {
 
-    // ====================== CHECK LOAN STATUS ======================
-    @GetMapping("/check-loan-status/{idNo}")
-    public ResponseEntity<Map<String, Object>> checkLoanStatus(@PathVariable Long idNo) {
-        Optional<Loan> activeLoan = loanRepository.findActiveLoanByIdNo(String.valueOf(idNo));
-        if (activeLoan.isPresent()) {
-            Loan loan = repaymentService.attachLiveDueAmount(activeLoan.get());
-            return ResponseEntity.ok(Map.of(
-                    "hasActiveLoan", true,
-                    "activeLoanAmount", loan.getAmount(),
-                    "dueAmount", loan.getDueAmount(),
-                    "status", loan.getStatus(),
-                    "message", "Existing active loan found"
-            ));
+            loanService.deleteLoan(id);
+
+            return ResponseEntity.ok(
+                    Map.of(
+                            "success",
+                            true,
+                            "message",
+                            "Loan deleted successfully."
+                    )
+            );
+
+        } catch (Exception e) {
+
+            return ResponseEntity
+                    .status(HttpStatus.BAD_REQUEST)
+                    .body(
+                            Map.of(
+                                    "success",
+                                    false,
+                                    "message",
+                                    e.getMessage() != null
+                                            ? e.getMessage()
+                                            : "Loan deletion failed."
+                            )
+                    );
         }
-
-        Account account = accountService.getAccountByNationalId(idNo);
-        if (account == null)
-            return ResponseEntity.ok(Map.of(
-                    "hasActiveLoan", false,
-                    "eligible", false,
-                    "reason", "Account not found"
-            ));
-
-        double limit = loanRiskService.calculateLoanLimit(account);
-        return ResponseEntity.ok(Map.of(
-                "hasActiveLoan", false,
-                "eligible", limit > 0,
-                "eligibleAmount", limit,
-                "message", "Loan eligibility determined"
-        ));
     }
 
-    // ====================== STATUS REQUEST DTO ======================
-    static class StatusRequest {
-        private String status;
-        public String getStatus() { return status; }
-        public void setStatus(String status) { this.status = status; }
+
+    // =========================================================
+    // APPROVE LOAN
+    // =========================================================
+
+    @PatchMapping("/{id}/approve")
+    public ResponseEntity<?> approveLoan(
+            @PathVariable Long id
+    ) {
+
+        try {
+
+            Loan loan =
+                    loanService.approveLoan(id);
+
+            transactionService
+                    .recordLoanApproval(
+                            loan
+                    );
+
+            return ResponseEntity.ok(
+                    loan
+            );
+
+        } catch (Exception e) {
+
+            e.printStackTrace();
+
+            return ResponseEntity
+                    .status(HttpStatus.BAD_REQUEST)
+                    .body(
+                            Map.of(
+                                    "success",
+                                    false,
+                                    "message",
+                                    e.getMessage() != null
+                                            ? e.getMessage()
+                                            : "Loan approval failed."
+                            )
+                    );
+        }
     }
+
+
+    // =========================================================
+    // REJECT LOAN
+    // =========================================================
 
     @PatchMapping("/{id}/reject")
-    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> rejectLoan(
+
             @PathVariable Long id,
-            @RequestBody LoanRejectRequest request
+
+            @RequestBody
+            Map<String, String> payload
     ) {
-        Loan loan = loanService.rejectLoan(id, request.getReason());
 
-        notificationService.createNotification(
-                loan.getId(),              // ✅ loanId
-                "Loan Rejected",            // message
-                "LOAN_REJECTION",           // type
-                loan.getEmail()             // createdBy / recipient
-        );
+        try {
 
-        return ResponseEntity.ok(loan);
+            String reason =
+                    payload == null
+                            ? ""
+                            : payload.getOrDefault(
+                            "reason",
+                            ""
+                    );
+
+            if (reason == null
+                    || reason.isBlank()) {
+
+                return ResponseEntity
+                        .badRequest()
+                        .body(
+                                Map.of(
+                                        "success",
+                                        false,
+                                        "message",
+                                        "A rejection reason is required."
+                                )
+                        );
+            }
+
+            Loan rejectedLoan =
+                    loanService.rejectLoan(
+                            id,
+                            reason.trim()
+                    );
+
+            return ResponseEntity.ok(
+                    Map.of(
+                            "success",
+                            true,
+                            "message",
+                            "Loan rejected successfully.",
+                            "loan",
+                            rejectedLoan
+                    )
+            );
+
+        } catch (Exception e) {
+
+            e.printStackTrace();
+
+            return ResponseEntity
+                    .status(HttpStatus.BAD_REQUEST)
+                    .body(
+                            Map.of(
+                                    "success",
+                                    false,
+                                    "message",
+                                    e.getMessage() != null
+                                            ? e.getMessage()
+                                            : "Loan rejection failed."
+                            )
+                    );
+        }
     }
+
+
+    // =========================================================
+    // LOAN TRANSACTIONS
+    // =========================================================
 
     @GetMapping("/{id}/transactions")
-    public ResponseEntity<List<RepaymentTransactionDTO>> getLoanTransactions(@PathVariable Long id) {
-        return ResponseEntity.ok(repaymentService.getLoanTransactions(id));
+    public ResponseEntity<List<RepaymentTransactionDTO>>
+    getTransactions(
+            @PathVariable Long id
+    ) {
+
+        return ResponseEntity.ok(
+                repaymentService
+                        .getLoanTransactions(id)
+        );
     }
 
 
+    // =========================================================
+    // GET ALL STAFF
+    // =========================================================
 
+    @GetMapping("/staff")
+    public List<Staff> getStaff() {
+
+        return loanService.getAllStaff();
+    }
+
+
+    // =========================================================
+    // CREATE STAFF
+    // =========================================================
+
+    @PostMapping("/staff")
+    public ResponseEntity<Staff> createStaff(
+            @RequestBody Staff staff
+    ) {
+
+        Staff savedStaff =
+                staffRepository.save(
+                        staff
+                );
+
+        return ResponseEntity.ok(
+                savedStaff
+        );
+    }
+
+
+    // =========================================================
+    // ASSIGN STAFF
+    // =========================================================
+
+    @PutMapping(
+            "/{loanId}/assign-staff/{staffId}"
+    )
+    public ResponseEntity<Loan> assignStaff(
+
+            @PathVariable Long loanId,
+
+            @PathVariable Long staffId
+    ) {
+
+        Loan loan =
+                loanService.assignStaff(
+                        loanId,
+                        staffId
+                );
+
+        return ResponseEntity.ok(
+                loan
+        );
+    }
 }

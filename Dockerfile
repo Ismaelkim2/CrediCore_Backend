@@ -21,4 +21,5 @@ COPY --from=build /app/target/credit-management-0.0.1-SNAPSHOT.jar app.jar
 EXPOSE 8080
 
 # Start Spring Boot app with env variables
-ENTRYPOINT ["sh", "-c", "java -Xmx400m -Xms256m -jar /app/app.jar --server.address=${SERVER_ADDRESS} --server.port=${SERVER_PORT}"]
+ENTRYPOINT ["java", "-Xmx400m", "-Xms256m", "-jar", "/app/app.jar"]
+

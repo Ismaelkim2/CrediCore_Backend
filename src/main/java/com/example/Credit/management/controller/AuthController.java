@@ -1,21 +1,17 @@
 package com.example.Credit.management.controller;
-
-import com.example.Credit.management.Model.LoginRequest;
-import com.example.Credit.management.Model.RegisterRequest;
-import com.example.Credit.management.Model.User;
-import com.example.Credit.management.Model.AccountStatus;
+import com.example.Credit.management.Model.*;
 import com.example.Credit.management.Repository.AccountRepository;
 import com.example.Credit.management.Repository.UserRepository;
 import com.example.Credit.management.SecConfig.AuthResponse;
 import com.example.Credit.management.SecConfig.JwtUtil;
 import com.example.Credit.management.services.AuthService;
-
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
 import java.util.*;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 
 @RestController
@@ -60,6 +56,43 @@ public class AuthController {
         return ResponseEntity
                 .status(503)
                 .body(Map.of("message", "OTP login temporarily disabled"));
+    }
+
+
+
+    @PutMapping("/users/{id}/role")
+    public ResponseEntity<?> assignRole(
+            @PathVariable Long id,
+            @RequestBody Map<String, String> request) {
+
+        User user = userRepository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "User not found"));
+
+        String roleName = request.get("role");
+
+        if (roleName == null || roleName.isBlank()) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("message", "Role is required"));
+        }
+
+        try {
+            Role role = Role.valueOf(
+                    roleName.trim().toUpperCase(Locale.ROOT));
+
+            user.setRole(role);
+            userRepository.save(user);
+
+            return ResponseEntity.ok(Map.of(
+                    "message", "User role updated successfully",
+                    "userId", user.getId(),
+                    "role", user.getRole().name()
+            ));
+
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("message", "Invalid role supplied"));
+        }
     }
 
 
@@ -170,7 +203,33 @@ public class AuthController {
         return ResponseEntity.ok("User deleted successfully");
     }
 
+    @PostMapping("/verify-account")
+    public ResponseEntity<?> verifyAccount(
+            @RequestBody VerifyAccountRequest request) {
 
+        authService.verifyAccount(
+                request.getEmail(),
+                request.getAccountNumber());
+
+        return ResponseEntity.ok(
+                Map.of(
+                        "verified", true,
+                        "message", "Account verified successfully."
+                ));
+    }
+
+    @PostMapping("/forgot-password")
+    public ResponseEntity<?> forgotPassword(
+            @RequestBody ForgotPasswordRequest request) {
+
+        authService.resetPasswordUsingAccount(
+                request.getEmail(),
+                request.getAccountNumber(),
+                request.getNewPassword());
+
+        return ResponseEntity.ok(
+                Map.of("message", "Password reset successfully."));
+    }
 
 
 

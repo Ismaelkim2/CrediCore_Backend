@@ -1,9 +1,6 @@
 package com.example.Credit.management.Model;
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
+import jakarta.persistence.*;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -11,19 +8,31 @@ import java.time.LocalDateTime;
 @Entity
 @Data
 public class Notification {
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    private String message;
-    private LocalDateTime createdAt;
-    private boolean read = false;
+    // =========================
 
-    private String type; // "SMS", "EMAIL", "BULK_REMINDER"
+    @Column(columnDefinition = "TEXT")
+    private String message;
+
+    private LocalDateTime createdAt;
+
+    @Column(name = "is_read", nullable = false)
+    private boolean read;
+
+    // LOAN CONTEXT (optional only)
     private Long loanId;
 
-    // Optional: user who triggered it
+    // TYPE: LOAN_CREATED, LOAN_APPROVED, SMS, EMAIL, etc
+    private String type;
+
+    // Who triggered notification (admin/system)
     private String createdBy;
 
-    // Getters and setters
+    @ManyToOne
+    @JoinColumn(name = "account_id")
+    private Account account;
 }

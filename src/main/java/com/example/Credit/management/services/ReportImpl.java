@@ -64,7 +64,8 @@ public class ReportImpl extends ReportService {
                 return loanRepo.findByDisbursedDateBetween(startDate, endDate).stream()
                         .map(loan -> Map.<String, Object>of(
                                 "id", loan.getId(),
-                                "idNo", loan.getIdNo(),
+                                "nationalId", loan.getAccount() != null ? loan.getAccount().getNationalId() : null,
+                                "applicantName", loan.getApplicantName(),
                                 "location", loan.getLocation(),
                                 "amount", loan.getAmount(),
                                 "disbursedDate", loan.getDisbursedDate(),

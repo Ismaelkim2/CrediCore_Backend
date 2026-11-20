@@ -4,17 +4,25 @@ import com.example.Credit.management.DTO.RepaymentDTO;
 import com.example.Credit.management.DTO.RepaymentTransactionDTO;
 import com.example.Credit.management.Model.*;
 import com.example.Credit.management.Repository.*;
-import jakarta.transaction.Transactional;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class RepaymentService {
+
+    @Value("${mpesa.mode:real}")
+    private String mpesaMode;
+
+    @Autowired
+    private MpesaStkService mpesaStkService;
 
     @Autowired
     private RepaymentRepository repaymentRepository;
@@ -26,175 +34,310 @@ public class RepaymentService {
     private AccountRepository accountRepository;
 
     @Autowired
-    private StatementService statementService;
+    private NotificationService notificationService;
 
-    /**
-     * Save a repayment and update related entities safely.
-     * Ensures the loan and account updates happen atomically.
-     */
-    @Transactional
-    public String saveRepayment(RepaymentDTO dto) {
+    @Autowired
+    private SmsService smsService;
+
+    @Autowired
+    private EmailService emailService;
+
+    @Autowired
+    private TransactionService transactionService;
+
+    // =========================
+    // THREAD SAFE MAPS
+    // =========================
+    private final Map<String, String> repaymentStatus = new ConcurrentHashMap<>();
+    private final Map<String, RepaymentDTO> pendingRepayments = new ConcurrentHashMap<>();
+
+    // =========================
+    // MAIN ENTRY
+    // =========================
+    public Map<String, Object> saveRepayment(RepaymentDTO dto) {
 
         System.out.println("🔍 Incoming repayment DTO: " + dto);
 
-        // ✅ Step 1: Validate input
-        if (dto.getLoanId() == null || dto.getAmountPaid() == null || dto.getAmountPaid() <= 0) {
-            throw new IllegalArgumentException("❌ Invalid repayment details provided.");
-        }
+        return "mock".equalsIgnoreCase(mpesaMode)
+                ? mockRepayment(dto)
+                : realRepayment(dto);
+    }
 
-        // ✅ Step 2: Fetch the loan
+    // =========================
+    // MOCK FLOW
+    // =========================
+    private Map<String, Object> mockRepayment(RepaymentDTO dto) {
+
+        String ref = "MOCK-" + UUID.randomUUID();
+        repaymentStatus.put(ref, "INITIATED");
+
         Loan loan = loanRepository.findById(dto.getLoanId())
-                .orElseThrow(() -> new IllegalArgumentException("❌ Loan not found."));
+                .orElseThrow(() -> new IllegalArgumentException("Loan not found for ID: " + dto.getLoanId()));
 
-        // ✅ Step 3: Fetch the paying account
+        String status = loan.getStatus() == null ? "" : loan.getStatus().toUpperCase();
+
+        if (status.equals("REJECTED")
+                || status.equals("AUTO_REJECTED")
+                || status.equals("AWAITING_AUTHORIZATION")) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Repayment is not allowed for " + status + " loans."
+            );
+        }
+
         Account account = accountRepository.findByAccountNumber(dto.getAccountNumber())
-                .orElseThrow(() -> new IllegalArgumentException("❌ Account not found."));
+                .orElseThrow(() -> new IllegalArgumentException("Account not found for Number: " + dto.getAccountNumber()));
 
-        // ✅ Step 4: Check balance sufficiency
-        if (account.getBalance() < dto.getAmountPaid()) {
-            throw new IllegalArgumentException("❌ Insufficient account balance to complete repayment.");
-        }
+        double amount = dto.getAmountPaid();
 
-        // ✅ Step 5: Fetch totals
-        Double totalRepayable = loan.getTotalRepayableAmount();
-        if (totalRepayable == null) {
-            throw new IllegalArgumentException("❌ Loan has no total repayable amount defined.");
-        }
+        new Thread(() -> {
+            try {
+                Thread.sleep(1500);
+                repaymentStatus.put(ref, "STK_PUSH_SENT");
 
-        BigDecimal alreadyPaid = repaymentRepository.findTotalPaidByLoanId(loan.getId());
-        if (alreadyPaid == null) alreadyPaid = BigDecimal.ZERO;
+                Thread.sleep(2000);
+                repaymentStatus.put(ref, "PROCESSING_PAYMENT");
 
-        BigDecimal remainingDue = BigDecimal.valueOf(totalRepayable).subtract(alreadyPaid);
-        BigDecimal payment = BigDecimal.valueOf(dto.getAmountPaid());
+                // Re-fetch entities fresh inside background thread session
+                Loan threadLoan = loanRepository.findById(loan.getId()).orElse(loan);
+                Account threadAccount = accountRepository.findByAccountNumber(account.getAccountNumber()).orElse(account);
 
-        if (remainingDue.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException("✅ Loan is already fully repaid.");
-        }
-        if (payment.compareTo(remainingDue) > 0) {
-            throw new IllegalArgumentException("❌ Payment exceeds remaining balance of KES " + remainingDue);
-        }
+                // 1. Update Account Balance
+                threadAccount.setBalance(
+                        (threadAccount.getBalance() == null ? 0.0 : threadAccount.getBalance()) - amount
+                );
+                accountRepository.save(threadAccount);
 
-        // ✅ Step 6: Deduct payment from account
-        double newBalance = account.getBalance() - dto.getAmountPaid();
-        account.setBalance(newBalance);
-        accountRepository.save(account);
+                // 2. Update Loan Status & Balances
+                double currentPaid = threadLoan.getAmountPaid() == null ? 0.0 : threadLoan.getAmountPaid();
+                double currentDue = threadLoan.getDueAmount() == null ? 0.0 : threadLoan.getDueAmount();
 
-        // ✅ Step 7: Save repayment record
-        Repayment repayment = new Repayment();
-        repayment.setLoan(loan);
-        repayment.setAmountPaid(dto.getAmountPaid());
-        repayment.setRepaymentDate(
-                dto.getRepaymentDate() != null ? dto.getRepaymentDate() : LocalDate.from(LocalDateTime.now())
-        );
-        repayment.setPhoneNumber(dto.getPhoneNumber());
-        repayment.setLocation(dto.getLocation());
-        repayment.setAccountNumber(dto.getAccountNumber());
+                threadLoan.setAmountPaid(currentPaid + amount);
+                double newDue = Math.max(currentDue - amount, 0);
+                threadLoan.setDueAmount(newDue);
+                threadLoan.setStatus(newDue <= 0 ? "PAID" : "PARTIAL");
 
-        // 🔹 Step 7a: Determine payment method based on account type
-        if (account.getType() != null) {
-            switch (account.
-                    getType().toUpperCase()) {
-                case "MPESA":
-                    repayment.setPaymentMethod("MPESA");
-                    break;
-                case "BANK":
-                    repayment.setPaymentMethod("Bank Transfer");
-                    break;
-                default:
-                    repayment.setPaymentMethod("Cash");
+                if (newDue <= 0) {
+                    notificationService.createNotification(
+                            threadAccount,
+                            "Congratulations! Loan #" + threadLoan.getId() + " has been fully settled.",
+                            "LOAN_CLEARED"
+                    );
+                }
+                loanRepository.save(threadLoan);
+
+                // 3. Generate M-Pesa Receipt Number BEFORE logging transaction
+                String mpesaReceipt = "MPE" + UUID.randomUUID().toString().replaceAll("-", "").substring(0, 8).toUpperCase();
+                dto.setMpesaReceiptNumber(mpesaReceipt);
+                dto.setPaymentMethod("MPESA");
+                dto.setPaymentReference(mpesaReceipt);
+
+                System.out.println("✅ Generated Mock Receipt: " + mpesaReceipt + " for DTO: " + dto);
+
+                // 4. Save Repayment Entity
+                Repayment r = new Repayment();
+                r.setLoan(threadLoan);
+                r.setAmountPaid(amount);
+                r.setRepaymentDate(LocalDate.now());
+                r.setAccountNumber(dto.getAccountNumber());
+                r.setPhoneNumber(dto.getPhoneNumber());
+                r.setMpesaReceiptNumber(mpesaReceipt);
+                r.setPaymentMethod("MPESA");
+                repaymentRepository.save(r);
+
+                // 5. Record Transaction Ledger Entry (DTO has receipt attached now)
+                transactionService.recordRepayment(dto, threadLoan);
+
+                // 6. Send Notifications
+                sendNotifications(threadAccount, threadLoan, amount);
+
+                repaymentStatus.put(ref, "SUCCESS");
+
+            } catch (Exception e) {
+                System.err.println("❌ Error processing mock repayment thread:");
+                e.printStackTrace();
+                repaymentStatus.put(ref, "FAILED");
             }
-        } else {
-            repayment.setPaymentMethod("Bank API");
+        }).start();
+
+        return Map.of(
+                "status", "INITIATED",
+                "reference", ref,
+                "message", "Mock STK simulation started"
+        );
+    }
+
+    // =========================
+    // REAL MPESA FLOW
+    // =========================
+    private Map<String, Object> realRepayment(RepaymentDTO dto) {
+
+        Loan loan = loanRepository.findById(dto.getLoanId())
+                .orElseThrow(() -> new IllegalArgumentException("Loan not found"));
+
+        String status = loan.getStatus() == null ? "" : loan.getStatus().toUpperCase();
+
+        if (status.equals("REJECTED")
+                || status.equals("AUTO_REJECTED")
+                || status.equals("AWAITING_AUTHORIZATION")) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Repayment is not allowed for " + status + " loans."
+            );
         }
 
-        repaymentRepository.save(repayment);
+        accountRepository.findByAccountNumber(dto.getAccountNumber())
+                .orElseThrow(() -> new IllegalArgumentException("Account not found"));
 
-        // ✅ Step 8: Record in statement
-        Statement statement = new Statement();
-        statement.setNationalId(String.valueOf(loan.getIdNo()));
-        statement.setDescription("Loan Repayment for Loan ID: " + loan.getId());
-        statement.setDebit(dto.getAmountPaid());
-        statement.setCredit(0.0);
-        statement.setDate(LocalDateTime.now());
-        statement.setBalanceAfter(account.getBalance());
-        statement.setAccountNumber(dto.getAccountNumber());
-        statementService.saveAll(List.of(statement));
-
-        // ✅ Step 9: Update loan status and due amount (CANONICAL)
-        BigDecimal updatedPaid = alreadyPaid.add(payment);
-        BigDecimal remaining = BigDecimal.valueOf(totalRepayable).subtract(updatedPaid);
-
-        loan.setAmountPaid(updatedPaid.doubleValue());
-        loan.setDueAmount(Math.max(remaining.doubleValue(), 0.0));
-
-        if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
-            loan.setStatus("PAID");
-            loan.setDueAmount(0.0);
-        } else {
-            loan.setStatus("PARTIAL");
+        if (dto.getPhoneNumber() == null || dto.getPhoneNumber().isBlank()) {
+            throw new IllegalArgumentException("Phone number is required");
         }
 
-        loanRepository.save(loan);
+        Map<String, Object> stkResponse =
+                mpesaStkService.initiateStkPush(
+                        formatPhone(dto.getPhoneNumber()),
+                        String.valueOf(dto.getAmountPaid())
+                );
 
-        // ✅ Step 10: Return confirmation
-        if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
-            return "✅ Loan fully repaid. New account balance: KES " + account.getBalance();
-        } else {
-            return String.format("✅ Partial repayment of KES %.2f successful. Remaining loan balance: KES %.2f. Account balance: KES %.2f.",
-                    dto.getAmountPaid(), remaining.doubleValue(), account.getBalance());
+        Object rawId = stkResponse.get("CheckoutRequestID");
+
+        if (rawId == null) {
+            throw new IllegalStateException(
+                    String.valueOf(stkResponse.getOrDefault("message", "STK failed"))
+            );
+        }
+
+        String checkoutRequestId = rawId.toString();
+
+        pendingRepayments.put(checkoutRequestId, dto);
+        repaymentStatus.put(checkoutRequestId, "STK_PUSH_SENT");
+
+        return Map.of(
+                "status", "PENDING",
+                "checkoutRequestId", checkoutRequestId,
+                "message", "Real STK initiated"
+        );
+    }
+
+    // =========================
+    // NOTIFICATION HELPER
+    // =========================
+    public void sendNotifications(Account account, Loan loan, double amount) {
+
+        String message = "Repayment of KES " + amount + " received successfully.";
+
+        notificationService.createNotification(
+                account,
+                message,
+                "REPAYMENT"
+        );
+
+        if (loan.getPhoneNumber() != null && !loan.getPhoneNumber().isBlank()) {
+            smsService.sendSms(
+                    loan.getPhoneNumber(),
+                    message
+            );
+        }
+
+        if (loan.getEmail() != null && !loan.getEmail().isBlank()) {
+            emailService.sendEmail(
+                    loan.getEmail(),
+                    "Repayment Received",
+                    message
+            );
         }
     }
 
-
-    // 🔹 Helper: Calculate updated due amount dynamically
-    public double calculateDueAmount(Loan loan) {
-        if (loan == null) return 0.0;
-        BigDecimal totalPaid = repaymentRepository.findTotalPaidByLoanId(loan.getId());
-        if (totalPaid == null) totalPaid = BigDecimal.ZERO;
-
-        BigDecimal due = BigDecimal.valueOf(loan.getTotalRepayableAmount()).subtract(totalPaid);
-        return due.max(BigDecimal.ZERO).doubleValue();
+    // =========================
+    // STATUS & CACHE MANAGEMENT
+    // =========================
+    public String getStatus(String ref) {
+        return repaymentStatus.getOrDefault(ref, "UNKNOWN");
     }
 
+    public void updateStatus(String ref, String status) {
+        repaymentStatus.put(ref, status);
+    }
+
+    public RepaymentDTO getPendingRepayment(String ref) {
+        return pendingRepayments.get(ref);
+    }
+
+    // =========================
+    // LOAN CALCULATIONS
+    // =========================
     public Loan attachLiveDueAmount(Loan loan) {
-        if (loan == null) return null;
 
-        // ✅ Do NOT touch loans that are not yet approved/disbursed
-        if ("AWAITING_AUTHORIZATION".equalsIgnoreCase(loan.getStatus()) ||
-                "REJECTED".equalsIgnoreCase(loan.getStatus())) {
-            loan.setAmountPaid(0.0);
-            loan.setDueAmount(0.0);
-            return loan;
+        if (loan == null) {
+            return null;
         }
 
-        // Calculate total repaid
-        BigDecimal totalRepaid = repaymentRepository.findTotalPaidByLoanId(loan.getId());
-        double repaid = (totalRepaid != null) ? totalRepaid.doubleValue() : 0.0;
+        BigDecimal totalPaid = repaymentRepository.findTotalPaidByLoanId(loan.getId());
+        double paid = totalPaid == null ? 0.0 : totalPaid.doubleValue();
 
-        loan.setAmountPaid(repaid);
+        loan.setAmountPaid(paid);
 
-        double remaining = loan.getTotalRepayableAmount() - repaid;
-        loan.setDueAmount(Math.max(remaining, 0.0));  // UI uses this
+        double remaining = Math.max(
+                loan.getTotalRepayableAmount() - paid,
+                0
+        );
 
-        // ✅ Update status dynamically only for disbursed/approved loans
-        if (remaining <= 0) {
-            loan.setStatus("PAID");
-        } else if (repaid > 0) {
-            loan.setStatus("PARTIAL");
-        } else {
-            loan.setStatus("APPROVED"); // still unpaid but disbursed
+        loan.setDueAmount(remaining);
+
+        String currentStatus = loan.getStatus() == null ? "" : loan.getStatus().toUpperCase();
+
+        if ("APPROVED".equals(currentStatus)
+                || "PARTIAL".equals(currentStatus)
+                || "PAID".equals(currentStatus)) {
+
+            if (remaining <= 0) {
+                loan.setStatus("PAID");
+            } else if (paid > 0) {
+                loan.setStatus("PARTIAL");
+            } else {
+                loan.setStatus("APPROVED");
+            }
         }
-
 
         return loan;
     }
 
-
+    // =========================
+    // MAPPINGS & QUERIES
+    // =========================
     public List<RepaymentTransactionDTO> getLoanTransactions(Long loanId) {
         return repaymentRepository.findTransactionsByLoanId(loanId);
     }
 
+    public List<RepaymentDTO> getAllRepaymentsAsDTO() {
+        return repaymentRepository.findAll().stream().map(r -> {
+            RepaymentDTO dto = new RepaymentDTO();
+            dto.setId(r.getId());
+            dto.setAmountPaid(r.getAmountPaid());
+            dto.setRepaymentDate(r.getRepaymentDate());
+            dto.setPhoneNumber(r.getPhoneNumber());
+            dto.setAccountNumber(r.getAccountNumber());
+            dto.setPaymentMethod(r.getPaymentMethod());
+            dto.setMpesaReceiptNumber(r.getMpesaReceiptNumber());
+            return dto;
+        }).toList();
+    }
 
+    // =========================
+    // PHONE NORMALIZATION
+    // =========================
+    private String formatPhone(String phone) {
 
+        if (phone == null) return null;
 
+        phone = phone.trim();
+
+        if (phone.startsWith("+")) phone = phone.substring(1);
+        if (phone.startsWith("0")) phone = "254" + phone.substring(1);
+        if (!phone.startsWith("254")) phone = "254" + phone;
+
+        return phone;
+    }
 }

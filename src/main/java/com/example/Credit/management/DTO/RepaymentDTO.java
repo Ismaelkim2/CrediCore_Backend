@@ -10,6 +10,8 @@ public class RepaymentDTO {
     private Double amountPaid;
 
     @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
+
+    private Long id;
     private LocalDate repaymentDate;
 
     private String idNo;
@@ -17,6 +19,13 @@ public class RepaymentDTO {
     private String location;
     private String accountNumber;
     private String paymentMethod;
+
+    private String applicantName;    // from Loan
+    private Double remainingDue;
+
+    private String paymentReference;
+
+    private String mpesaReceiptNumber;
 // use @Data or explicit getters
 
 }

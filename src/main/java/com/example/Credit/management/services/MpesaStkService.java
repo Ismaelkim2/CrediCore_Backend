@@ -2,9 +2,11 @@ package com.example.Credit.management.services;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
@@ -14,118 +16,192 @@ public class MpesaStkService {
     @Autowired
     private MpesaAuthService authService;
 
-    private final Map<String, Map<String, Object>> transactionStatus = new HashMap<>();
+    private static final String STK_URL =
+            "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest";
 
-    /**
-     * ✅ Simulate crediting user account after successful STK callback
-     */
-    public void creditUserAccount(String phoneNumber, double amount) {
-        if (phoneNumber == null || phoneNumber.isBlank()) {
-            System.out.println("⚠️ Cannot credit account — phone number is null or empty.");
-            return;
-        }
-        System.out.println("💰 Crediting account for " + phoneNumber + " with amount: " + amount);
-    }
+    // ✅ OFFICIAL SANDBOX SHORTCODE
+    private static final String SHORTCODE = "174379";
 
-    /**
-     * ✅ Initiate STK Push request
-     */
-    public String initiateStkPush(String phoneNumber, String amount) {
+    // ✅ OFFICIAL SANDBOX PASSKEY
+    private static final String PASSKEY =
+            "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919";
+
+    public Map<String, Object> initiateStkPush(
+            String phoneNumber,
+            String amount
+    ) {
+
         try {
-            // ✅ Validate phone number
-            if (phoneNumber == null || phoneNumber.isBlank()) {
-                throw new IllegalArgumentException("Phone number is missing.");
-            }
 
-            // ✅ Normalize to 254 format
-            phoneNumber = phoneNumber.trim();
-            if (phoneNumber.startsWith("0")) {
-                phoneNumber = "254" + phoneNumber.substring(1);
-            } else if (phoneNumber.startsWith("+254")) {
-                phoneNumber = phoneNumber.substring(1); // remove '+' if exists
-            } else if (!phoneNumber.startsWith("254")) {
-                throw new IllegalArgumentException("Invalid phone number format. Use 07XXXXXXXX.");
-            }
+            String token =
+                    authService.getAccessToken();
 
-            System.out.println("📲 Initiating STK Push for " + phoneNumber + " | Amount: " + amount);
+            System.out.println("✅ ACCESS TOKEN: " + token);
 
-            // ✅ Get access token
-            String token = authService.getAccessToken();
+            phoneNumber = formatPhone(phoneNumber);
 
-            // ✅ Safaricom sandbox URL
-            String url = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest";
+            String timestamp =
+                    new SimpleDateFormat("yyyyMMddHHmmss")
+                            .format(new Date());
 
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.setBearerAuth(token);
+            String passwordString =
+                    SHORTCODE + PASSKEY + timestamp;
 
-            String timestamp = new SimpleDateFormat("yyyyMMddHHmmss").format(new Date());
+            String password =
+                    Base64.getEncoder()
+                            .encodeToString(
+                                    passwordString.getBytes(StandardCharsets.UTF_8)
+                            );
 
-            // ✅ Daraja credentials (sandbox)
-            String businessShortCode = "174379"; // Paybill or till number
-            String passkey = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919";
+            Map<String, Object> payload =
+                    new HashMap<>();
 
-            // ✅ Generate password
-            String password = Base64.getEncoder().encodeToString(
-                    (businessShortCode + passkey + timestamp).getBytes()
-            );
-
-            // ✅ Prepare payload
-            Map<String, Object> payload = new HashMap<>();
-            payload.put("BusinessShortCode", businessShortCode);
+            payload.put("BusinessShortCode", SHORTCODE);
             payload.put("Password", password);
             payload.put("Timestamp", timestamp);
             payload.put("TransactionType", "CustomerPayBillOnline");
-            int validAmount = (int) Double.parseDouble(amount);
-            payload.put("Amount", validAmount);
+
+            // ✅ integer amount only
+            int stkAmount =
+                    (int) Double.parseDouble(amount);
+
+            payload.put("Amount", stkAmount);
+
             payload.put("PartyA", phoneNumber);
-            payload.put("PartyB", businessShortCode);
+            payload.put("PartyB", SHORTCODE);
             payload.put("PhoneNumber", phoneNumber);
-            payload.put("CallBackURL", "https://ea0ae552c08f.ngrok-free.app/api/mpesa/callback");
-            payload.put("AccountReference", "Kims Bank");
-            payload.put("TransactionDesc", "CreditBank annual deductions via M-Pesa");
 
-            // ✅ Send STK push request
-            RestTemplate restTemplate = new RestTemplate();
-            HttpEntity<Map<String, Object>> request = new HttpEntity<>(payload, headers);
+            // ✅ Replace with your actual callback
+            payload.put(
+                    "CallBackURL",
+                    "https://mydomain.com/mpesa-express-simulate/"
+            );
 
-            System.out.println("🌐 Sending STK Push request to Safaricom...");
-            System.out.println("➡️ Payload: " + payload);
+            payload.put("AccountReference", "LOAN_PAYMENT");
+            payload.put("TransactionDesc", "Loan repayment");
 
-            ResponseEntity<String> response = restTemplate.postForEntity(url, request, String.class);
+            System.out.println("================================");
+            System.out.println("PHONE: " + phoneNumber);
+            System.out.println("TIMESTAMP: " + timestamp);
+            System.out.println("PASSWORD STRING: " + passwordString);
+            System.out.println("PASSWORD: " + password);
+            System.out.println("PAYLOAD: " + payload);
+            System.out.println("================================");
 
-            System.out.println("✅ STK Push Response: " + response.getBody());
+            HttpHeaders headers =
+                    new HttpHeaders();
+
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.setBearerAuth(token);
+
+            HttpEntity<Map<String, Object>> request =
+                    new HttpEntity<>(payload, headers);
+
+            SimpleClientHttpRequestFactory factory =
+                    new SimpleClientHttpRequestFactory();
+
+            factory.setConnectTimeout(30000);
+            factory.setReadTimeout(30000);
+
+            RestTemplate restTemplate =
+                    new RestTemplate(factory);
+
+            ResponseEntity<Map> response =
+                    restTemplate.postForEntity(
+                            STK_URL,
+                            request,
+                            Map.class
+                    );
+
+            System.out.println("✅ STK RESPONSE: " + response.getBody());
+
             return response.getBody();
 
-        } catch (IllegalArgumentException e) {
-            System.err.println("⚠️ Validation Error: " + e.getMessage());
-            return "❌ Validation Error: " + e.getMessage();
-
         } catch (Exception e) {
-            System.err.println("❌ STK Push Error: " + e.getMessage());
+
             e.printStackTrace();
-            return "❌ Error initiating STK Push: " + e.getMessage();
+
+            return Map.of(
+                    "error", true,
+                    "message", e.getMessage()
+            );
         }
     }
 
-    /**
-     * ✅ Update STK transaction status
-     */
-    public void updateTransactionStatus(String checkoutRequestId, int resultCode, String resultDesc) {
-        Map<String, Object> status = new HashMap<>();
+    // ================================
+// ✅ TRACK TRANSACTION STATUS
+// ================================
+    private final Map<String, Map<String, Object>> transactionStatus =
+            new HashMap<>();
+
+    // ================================
+// ✅ UPDATE TRANSACTION STATUS
+// ================================
+    public void updateTransactionStatus(
+            String checkoutRequestId,
+            int resultCode,
+            String resultDesc
+    ) {
+
+        Map<String, Object> status =
+                new HashMap<>();
+
         status.put("resultCode", resultCode);
         status.put("resultDesc", resultDesc);
+
         transactionStatus.put(checkoutRequestId, status);
-        System.out.println("📦 Updated STK transaction status: " + checkoutRequestId + " => " + status);
+
+        System.out.println(
+                "✅ Transaction updated: "
+                        + checkoutRequestId
+                        + " => "
+                        + status
+        );
     }
 
-    /**
-     * ✅ Retrieve STK transaction status
-     */
-    public Map<String, Object> getTransactionStatus(String checkoutRequestId) {
-        return transactionStatus.getOrDefault(checkoutRequestId, Map.of(
-                "resultCode", -1,
-                "resultDesc", "Pending"
-        ));
+    // ================================
+// ✅ GET TRANSACTION STATUS
+// ================================
+    public Map<String, Object> getTransactionStatus(
+            String checkoutRequestId
+    ) {
+
+        return transactionStatus.getOrDefault(
+                checkoutRequestId,
+                Map.of(
+                        "resultCode", -1,
+                        "resultDesc", "Pending"
+                )
+        );
     }
+
+    private String formatPhone(String phone) {
+
+        if (phone == null || phone.isBlank()) {
+            throw new IllegalArgumentException("Phone number required");
+        }
+
+        phone = phone.trim();
+
+        if (phone.startsWith("+")) {
+            phone = phone.substring(1);
+        }
+
+        if (phone.startsWith("0")) {
+            phone = "254" + phone.substring(1);
+        }
+
+        if (!phone.startsWith("254")) {
+            phone = "254" + phone;
+        }
+
+        if (phone.length() != 12) {
+            throw new IllegalArgumentException(
+                    "Invalid phone number: " + phone
+            );
+        }
+
+        return phone;
+    }
+
 }

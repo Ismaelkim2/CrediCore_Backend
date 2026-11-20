@@ -1,35 +1,10 @@
-app = "credit-management"
-primary_region = "sin"
-
-[build]
-dockerfile = "Dockerfile"
-
-[env]
-# Spring Boot profile
-SPRING_PROFILES_ACTIVE = "prod"
+SPRING_PROFILES_ACTIVE=prod
 
 # Server config
-SERVER_PORT = "8080"
-SERVER_ADDRESS = "0.0.0.0"
+SERVER_PORT=8080
+SERVER_ADDRESS=0.0.0.0
 
-# Database config
-SPRING_DATASOURCE_URL = "jdbc:postgresql://db.ceizaesebtkxfggfofpd.supabase.co:5432/postgres?sslmode=require"
-SPRING_DATASOURCE_USERNAME = "postgres"
-
-[[services]]
-internal_port = 8080
-protocol = "tcp"
-
-[[services.ports]]
-handlers = ["http"]
-port = 80
-
-[[services.ports]]
-handlers = ["tls", "http"]
-port = 443
-
-[[services.http_checks]]
-path = "/actuator/health"
-interval = "10s"
-timeout = "5s"
-grace_period = "120s"
+# PostgreSQL Database config
+SPRING_DATASOURCE_URL=jdbc:postgresql://<DB_HOST>:<DB_PORT>/<DB_NAME>
+SPRING_DATASOURCE_USERNAME=postgres
+SPRING_DATASOURCE_PASSWORD=35501092@Ismael

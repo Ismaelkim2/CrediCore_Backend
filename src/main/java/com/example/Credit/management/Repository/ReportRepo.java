@@ -16,8 +16,14 @@ public interface ReportRepo extends JpaRepository<Loan, Long> {
 
     @Query("""
         SELECT new com.example.Credit.management.DTO.LoanReportDTO(
-            l.id, l.applicantName, l.amount, 0.0,
-            l.totalRepayableAmount, l.status, l.phoneNumber
+            l.id,
+            l.applicantName,
+            l.account.nationalId,
+            l.amount,
+            0.0,
+            l.totalRepayableAmount,
+            l.status,
+            l.phoneNumber
         )
         FROM Loan l
         WHERE (:startDate IS NULL OR l.applicationDate >= :startDate)
@@ -28,8 +34,14 @@ public interface ReportRepo extends JpaRepository<Loan, Long> {
 
     @Query("""
         SELECT new com.example.Credit.management.DTO.LoanReportDTO(
-            l.id, l.applicantName, l.amount, 0.0,
-            l.totalRepayableAmount, l.status, l.phoneNumber
+            l.id,
+            l.applicantName,
+            l.account.nationalId,
+            l.amount,
+            0.0,
+            l.totalRepayableAmount,
+            l.status,
+            l.phoneNumber
         )
         FROM Loan l
         WHERE l.status = 'APPROVED'
@@ -40,8 +52,31 @@ public interface ReportRepo extends JpaRepository<Loan, Long> {
                                           @Param("endDate") LocalDate endDate);
 
     @Query("""
+        SELECT new com.example.Credit.management.DTO.LoanReportDTO(
+            l.id,
+            l.applicantName,
+            l.account.nationalId,
+            l.amount,
+            0.0,
+            l.totalRepayableAmount,
+            l.status,
+            l.phoneNumber
+        )
+        FROM Loan l
+        WHERE l.status = 'REJECTED'
+          AND (:startDate IS NULL OR l.applicationDate >= :startDate)
+          AND (:endDate IS NULL OR l.applicationDate <= :endDate)
+    """)
+    List<LoanReportDTO> findRejectedLoans(@Param("startDate") LocalDate startDate,
+                                          @Param("endDate") LocalDate endDate);
+
+    @Query("""
         SELECT new com.example.Credit.management.DTO.OverdueLoanDTO(
-            l.id, l.applicantName, l.amount, l.dueDate)
+            l.id,
+            l.applicantName,
+            l.amount,
+            l.dueDate
+        )
         FROM Loan l
         WHERE l.dueDate < CURRENT_DATE
           AND l.status != 'PAID'
@@ -50,7 +85,11 @@ public interface ReportRepo extends JpaRepository<Loan, Long> {
 
     @Query("""
         SELECT new com.example.Credit.management.DTO.OverdueLoanDTO(
-            l.id, l.applicantName, l.amount, l.dueDate)
+            l.id,
+            l.applicantName,
+            l.amount,
+            l.dueDate
+        )
         FROM Loan l
         WHERE l.dueDate < CURRENT_DATE
           AND l.status != 'PAID'
@@ -62,32 +101,18 @@ public interface ReportRepo extends JpaRepository<Loan, Long> {
 
     @Query("""
         SELECT new com.example.Credit.management.DTO.LoanReportDTO(
-            l.id, l.applicantName, l.amount, 0.0,
-            l.totalRepayableAmount, l.status, l.phoneNumber
+            l.id,
+            l.applicantName,
+            l.account.nationalId,
+            l.amount,
+            COALESCE(SUM(r.amountPaid), 0.0),
+            l.totalRepayableAmount,
+            l.status,
+            l.phoneNumber
         )
         FROM Loan l
-        WHERE l.status = 'REJECTED'
-          AND (:startDate IS NULL OR l.applicationDate >= :startDate)
-          AND (:endDate IS NULL OR l.applicationDate <= :endDate)
+        LEFT JOIN l.repayments r
+        GROUP BY l.id, l.applicantName, l.account.nationalId, l.amount, l.totalRepayableAmount, l.status, l.phoneNumber
     """)
-    List<LoanReportDTO> findRejectedLoans(@Param("startDate") LocalDate startDate,
-                                          @Param("endDate") LocalDate endDate);
-
-    @Query("""
-    SELECT new com.example.Credit.management.DTO.LoanReportDTO(
-        l.id,
-        l.applicantName,
-        l.amount,
-        COALESCE(SUM(r.amountPaid), 0.0),
-        l.totalRepayableAmount,
-        l.status,
-        l.phoneNumber
-    )
-    FROM Loan l
-    LEFT JOIN l.repayments r
-    GROUP BY l.id, l.applicantName, l.amount, l.totalRepayableAmount, l.status, l.phoneNumber
-""")
     List<LoanReportDTO> findRawRepayments();
-
-
 }

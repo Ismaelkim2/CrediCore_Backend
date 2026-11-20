@@ -43,4 +43,6 @@ public class Repayment {
     @Column(name = "payment_method")
     private String paymentMethod; // now exists
 
+    private String mpesaReceiptNumber;
+
 }

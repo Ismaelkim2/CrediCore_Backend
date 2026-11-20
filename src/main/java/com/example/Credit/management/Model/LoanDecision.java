@@ -15,4 +15,5 @@ public class LoanDecision {
     private String riskLevel;
     private double interestRate;
     private String reason;
+    private Integer approvedDurationWeeks;
 }

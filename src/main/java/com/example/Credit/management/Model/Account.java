@@ -1,55 +1,236 @@
 package com.example.Credit.management.Model;
 
+import com.fasterxml.jackson.annotation.JsonManagedReference;
 import jakarta.persistence.*;
 import lombok.Data;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 @Data
 @Entity
+@Table(name = "account")
 public class Account {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    private String accountNumber;
-    private String nationalId;
-    private String fullName;
-    private String phoneNumber;
-    private String email;
-    private Double balance;
-    private String branch;
-    private String imageUrl;
+    /* ============================================================
+       BASIC ACCOUNT INFORMATION
+       ============================================================ */
 
-    private Double averageMonthlyTurnover;
-    private Double collateralValue;
-    private Boolean goodCreditStanding;
+    @Column(unique = true)
+    private String accountNumber;
+
+    @Column(unique = true)
+    private String phoneNumber;
+
+    @Column(unique = true)
+    private String email;
+
+    @Column(unique = true, updatable = false)
+    private String nationalId;
+
+    private String fullName;
+
+    private Double balance = 0.0;
+
+    private String branch;
+
+    private String imageUrl;
 
     @Column(nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
-    private String type;
+    @Column(nullable = false)
+    private String accountStatus = "ACTIVE";
 
-    // Explicit getter for controller
-    public String getEmail() { return email; }
+    private LocalDateTime lastTransactionDate;
 
-    public Double getBalance() { return balance; }
-    public void setBalance(Double balance) { this.balance = balance; }
+    private LocalDateTime closedAt;
 
-    public String getAccountNumber() { return accountNumber; }
-    public void setAccountNumber(String accountNumber) { this.accountNumber = accountNumber; }
+    @Column(length = 500)
+    private String closureReason;
 
-    public String getPhoneNumber() { return phoneNumber; }
-    public void setPhoneNumber(String phoneNumber) { this.phoneNumber = phoneNumber; }
+    @Enumerated(EnumType.STRING)
+    private CustomerCategory customerCategory;
 
-    public String getFullName() { return fullName; }
-    public void setFullName(String fullName) { this.fullName = fullName; }
+    @Enumerated(EnumType.STRING)
+    private ModeOfOperation modeOfOperation;
 
-    public String getBranch() { return branch; }
-    public void setBranch(String branch) { this.branch = branch; }
 
-    public String getImageUrl() { return imageUrl; }
-    public void setImageUrl(String imageUrl) { this.imageUrl = imageUrl; }
+    /* ============================================================
+       PERSONAL INFORMATION
+       ============================================================ */
 
+    private LocalDate dateOfBirth;
+
+    private String gender;
+
+
+    /* ============================================================
+       RESIDENTIAL INFORMATION
+       ============================================================ */
+
+    private String residentialAddress;
+
+    private String city;
+
+    private String county;
+
+    private String location;
+
+
+    /* ============================================================
+       EMPLOYMENT / BUSINESS INFORMATION
+       ============================================================ */
+
+    private String employmentStatus;
+
+    private String employerName;
+
+    private String businessType;
+
+    private String businessLocation;
+
+    private Double monthlyIncome;
+
+    private Double monthlyExpenses;
+
+    private String sourceOfFunds;
+
+
+    /* ============================================================
+       ACCOUNT DETAILS
+       ============================================================ */
+
+    private String accountType;
+
+    private String organizationName;
+
+    private String registrationNumber;
+
+    private LocalDate registrationDate;
+
+    private String kraPin;
+
+    private String industry;
+
+    private String website;
+
+    private String postalAddress;
+
+    private String country;
+
+    private Double annualTurnover;
+
+    private Double authorizedCapital;
+
+    private Integer numberOfEmployees;
+
+    private String operatingLicenseNumber;
+
+    private String taxComplianceCertificate;
+
+    private String boardResolutionNumber;
+
+    private String constitutionNumber;
+
+    private String trustDeedNumber;
+
+    private String certificateNumber;
+
+    private String primarySignatory;
+
+    private Integer totalOfficials;
+
+    private Integer totalSignatories;
+
+    private String approvalStatus = "PENDING";
+
+    private String approvedBy;
+
+    @Column(length = 1000)
+    private String rejectionReason;
+
+    private String riskRating;
+
+    private String amlStatus;
+
+    private String kycStatus;
+
+    @Column(unique = true)
+    private String cifNumber;
+
+    private String relationshipManager;
+
+    private String branchCode;
+
+    private String currency = "KES";
+
+    private String accountClass;
+
+    private Integer dormancyMonths = 6;
+
+    private Boolean smsAlerts = true;
+
+    private Boolean emailAlerts = true;
+
+    private Boolean mobileBanking = true;
+
+    private Boolean internetBanking = true;
+
+    private Boolean debitCard = false;
+
+    private Boolean chequeBook = false;
+
+    private Integer profileCompletion = 0;
+
+
+    /* ============================================================
+       NEXT OF KIN
+       ============================================================ */
+
+    private String nextOfKinName;
+
+    private String nextOfKinPhone;
+
+    private String nextOfKinRelationship;
+
+
+    /* ============================================================
+       CREDIT & RISK PROFILE
+       ============================================================ */
+
+    private Double averageMonthlyTurnover;
+
+    private Double collateralValue;
+
+    private Boolean goodCreditStanding;
+
+    @Column(nullable = false)
+    private Boolean notificationSoundEnabled = true;
+
+
+    /* ============================================================
+       ORGANIZATION PROFILE
+
+       Account owns OrganizationProfile.
+
+       Account
+          |
+          | 1 : 1
+          v
+       OrganizationProfile
+       ============================================================ */
+
+    @OneToOne(
+            mappedBy = "account",
+            cascade = CascadeType.ALL,
+            orphanRemoval = true,
+            fetch = FetchType.LAZY
+    )
+    @JsonManagedReference("account-organization")
+    private OrganizationProfile organizationProfile;
 }

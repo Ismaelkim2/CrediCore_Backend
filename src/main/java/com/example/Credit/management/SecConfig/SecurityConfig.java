@@ -1,13 +1,14 @@
-package com.example.Credit.management.SecConfig;
-import org.springframework.core.env.Environment;
 
+package com.example.Credit.management.SecConfig;
+
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.HttpMethod;
-import org.springframework.security.config.Customizer;
+import org.springframework.core.env.Environment;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -22,30 +23,53 @@ import java.util.List;
 public class SecurityConfig {
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain filterChain(
+            HttpSecurity http,
+            JwtAuthenticationFilter jwtFilter
+    ) throws Exception {
+
         http
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .csrf(csrf -> csrf.disable())
+
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+
+                        // PUBLIC ENDPOINTS
                         .requestMatchers(
                                 "/api/auth/login",
                                 "/api/auth/register",
                                 "/api/auth/send-otp",
                                 "/api/auth/verify-otp",
-                                "/uploads/**"
+                                "/api/auth/forgot-password",
+                                "/api/auth/verify-account",
+                                "/ws/**",
+                                "/uploads/**",
+                                "/api/accounts/image/**"
                         ).permitAll()
+
+                        // ADMIN ONLY
+                        .requestMatchers("/api/auth/users/**")
+                        .hasRole("ADMIN")
+
+                        // TENANT MANAGEMENT
+                        .requestMatchers("/api/tenant/**")
+                        .hasAnyRole("TENANT_AGENT", "ADMIN")
+
+                        // ALL OTHER ENDPOINTS
                         .anyRequest().authenticated()
+                )
+
+                .addFilterBefore(
+                        jwtFilter,
+                        UsernamePasswordAuthenticationFilter.class
                 );
 
         return http.build();
     }
 
-
-
-
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
+
         CorsConfiguration config = new CorsConfiguration();
 
         config.setAllowedOrigins(List.of(
@@ -54,17 +78,28 @@ public class SecurityConfig {
         ));
 
         config.setAllowedMethods(List.of(
-                "GET", "POST", "PUT", "DELETE", "OPTIONS"
+                "GET",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+                "OPTIONS"
         ));
 
         config.setAllowedHeaders(List.of("*"));
-        config.setExposedHeaders(List.of("Authorization"));
 
-        config.setAllowCredentials(false); // set true ONLY if using cookies
+        config.setExposedHeaders(List.of(
+                "Authorization"
+        ));
+
+        // Required for credentialed cross-origin requests.
+        config.setAllowCredentials(true);
+
         config.setMaxAge(3600L);
 
         UrlBasedCorsConfigurationSource source =
                 new UrlBasedCorsConfigurationSource();
+
         source.registerCorsConfiguration("/**", config);
 
         return source;
@@ -72,23 +107,35 @@ public class SecurityConfig {
 
     @Bean
     public ApplicationRunner runner(Environment env) {
-        return args -> {
-            System.out.println(">>> SERVER PORT = " + env.getProperty("server.port"));
-        };
+
+        return args -> System.out.println(
+                ">>> SERVER PORT = " +
+                        env.getProperty("server.port")
+        );
     }
 
-
-
-    // Static file mapping
     @Configuration
     public static class WebConfig implements WebMvcConfigurer {
-        @Override
-        public void addResourceHandlers(ResourceHandlerRegistry registry) {
-            Path uploadDir = Paths.get("uploads/loan_docs");
-            String uploadPath = uploadDir.toFile().getAbsolutePath();
 
-            registry.addResourceHandler("/uploads/loan_docs/**")
-                    .addResourceLocations("file:" + uploadPath + "/");
+        @Value("${app.upload.property-images-dir:uploads/properties}")
+        private String propertyImagesDirectory;
+
+        @Override
+        public void addResourceHandlers(
+                ResourceHandlerRegistry registry
+        ) {
+
+            Path propertyImagesPath = Paths
+                    .get(propertyImagesDirectory)
+                    .toAbsolutePath()
+                    .normalize();
+
+            String resourceLocation =
+                    propertyImagesPath.toUri().toString();
+
+            registry
+                    .addResourceHandler("/uploads/properties/**")
+                    .addResourceLocations(resourceLocation);
         }
     }
 }

@@ -1,0 +1,37 @@
+package com.example.Credit.management.Model;
+
+public enum DocumentType {
+
+    PASSPORT_PHOTO,
+
+    NATIONAL_ID,
+
+    KRA_PIN,
+
+    SIGNATURE,
+
+    PROOF_OF_ADDRESS,
+
+    GROUP_CERTIFICATE,
+
+    CONSTITUTION,
+
+    MEETING_MINUTES,
+
+    RESOLUTION,
+
+    CERTIFICATE_OF_INCORPORATION,
+
+    CR12,
+
+    BOARD_RESOLUTION,
+
+    MEMORANDUM,
+
+    TRUST_DEED,
+
+    REGISTRATION_CERTIFICATE,
+
+    OPERATING_LICENSE
+
+}

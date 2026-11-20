@@ -27,18 +27,19 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
 
-    @Autowired
+    @Autowired(required = false)
     private SendGridEmailService sendGridEmailService;
 
     // Twilio config
-    @Value("${twilio.account.sid}")
+    @Value("${twilio.account.sid:}")
     private String twilioAccountSid;
 
-    @Value("${twilio.auth.token}")
+    @Value("${twilio.auth.token:}")
     private String twilioAuthToken;
 
-    @Value("${twilio.phone.number}")
+    @Value("${twilio.phone.number:}")
     private String twilioPhoneNumber;
+
 
     // Temporary OTP store in memory
     private static final Map<String, OtpData> otpStore = new ConcurrentHashMap<>();
@@ -145,7 +146,12 @@ public class AuthService {
 
         // Save OTP in memory for 5 minutes
         otpStore.put(user.getEmail(), new OtpData(otp, LocalDateTime.now().plusMinutes(5)));
-        if (user.getPhoneNumber() != null) {
+        if (user.getPhoneNumber() != null
+                && twilioAccountSid != null
+                && !twilioAccountSid.isBlank()
+                && twilioAuthToken != null
+                && !twilioAuthToken.isBlank()) {
+
             String normalizedPhone = normalizePhone(user.getPhoneNumber());
             otpStore.put(normalizedPhone, new OtpData(otp, LocalDateTime.now().plusMinutes(5)));
 
@@ -165,11 +171,13 @@ public class AuthService {
 
         // Send Email
         try {
-            sendGridEmailService.sendOtpEmail(user.getEmail(), otp);
-            System.out.println("OTP sent via Email to " + user.getEmail());
+            if (sendGridEmailService != null) {
+                sendGridEmailService.sendOtpEmail(user.getEmail(), otp);
+            }
         } catch (Exception e) {
             System.out.println("SendGrid Email failed: " + e.getMessage());
         }
+
     }
 
     /** Send OTP to user by email (and phone if available) */
@@ -275,5 +283,38 @@ public class AuthService {
         public AccountNotApprovedException(String message) {
             super(message);
         }
+    }
+
+
+    public void verifyAccount(String email, String accountNumber) {
+
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() ->
+                        new RuntimeException("Email not found."));
+
+        Account account = accountRepository.findByAccountNumber(accountNumber)
+                .orElseThrow(() ->
+                        new RuntimeException("Account number not found."));
+
+        if (!user.getNationalId().equals(account.getNationalId())) {
+            throw new RuntimeException("Email and account number do not match.");
+        }
+
+    }
+
+    public void resetPasswordUsingAccount(
+            String email,
+            String accountNumber,
+            String newPassword) {
+
+        verifyAccount(email, accountNumber);
+
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() ->
+                        new RuntimeException("User not found."));
+
+        user.setPassword(passwordEncoder.encode(newPassword));
+
+        userRepository.save(user);
     }
 }
