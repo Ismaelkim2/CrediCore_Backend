@@ -6,10 +6,7 @@ import com.example.Credit.management.Model.Account;
 import com.example.Credit.management.Model.Loan;
 import com.example.Credit.management.Model.Staff;
 import com.example.Credit.management.Repository.StaffRepository;
-import com.example.Credit.management.services.AccountServiceImpl;
-import com.example.Credit.management.services.LoanService;
-import com.example.Credit.management.services.RepaymentService;
-import com.example.Credit.management.services.TransactionService;
+import com.example.Credit.management.services.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -49,6 +46,10 @@ public class LoanController {
 
     @Autowired
     private TransactionService transactionService;
+
+
+    @Autowired
+    private CloudinaryImageStorageService cloudinaryStorage;
 
 
     // =========================================================
@@ -369,78 +370,23 @@ public class LoanController {
                     parsedApplicationDate
             );
 
+
             // =====================================================
-            // 5. PROCESS OPTIONAL PROFILE IMAGE
+            // 5. PROCESS OPTIONAL PROFILE IMAGE - CLOUDINARY
             // =====================================================
 
-            if (file != null
-                    && !file.isEmpty()) {
+            if (file != null && !file.isEmpty()) {
 
-                String originalFilename =
-                        file.getOriginalFilename();
-
-                String safeFilename =
-                        StringUtils.cleanPath(
-                                originalFilename != null
-                                        ? originalFilename
-                                        : "profile-image"
-                        );
-
-                /*
-                 * Prevent directory traversal through a malicious
-                 * multipart filename.
-                 */
-                if (safeFilename.contains("..")) {
-
-                    return ResponseEntity
-                            .badRequest()
-                            .body(
-                                    Map.of(
-                                            "success",
-                                            false,
-                                            "message",
-                                            "Invalid image filename."
-                                    )
-                            );
-                }
-
-                String filename =
-                        System.currentTimeMillis()
-                                + "_"
-                                + safeFilename;
-
-                Path uploadPath =
-                        Paths.get(
-                                "uploads/profile/"
-                        );
-
-                if (!Files.exists(uploadPath)) {
-
-                    Files.createDirectories(
-                            uploadPath
-                    );
-                }
-
-                Path targetPath =
-                        uploadPath.resolve(
-                                filename
-                        );
-
-                Files.copy(
-                        file.getInputStream(),
-                        targetPath,
-                        StandardCopyOption.REPLACE_EXISTING
+                String imageUrl = cloudinaryStorage.upload(
+                        file,
+                        "credicore/accounts"
                 );
 
-                account.setImageUrl(
-                        "uploads/profile/"
-                                + filename
-                );
+                account.setImageUrl(imageUrl);
 
-                accountService.save(
-                        account
-                );
+                accountService.save(account);
             }
+
 
             // =====================================================
             // 6. BACKEND AUTHORITATIVE UNDERWRITING

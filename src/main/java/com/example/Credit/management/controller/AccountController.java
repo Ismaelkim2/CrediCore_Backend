@@ -7,6 +7,7 @@ import com.example.Credit.management.Repository.AccountRepository;
 import com.example.Credit.management.services.AccountService;
 import com.example.Credit.management.services.AccountServiceImpl;
 import com.example.Credit.management.services.AuthService;
+import com.example.Credit.management.services.CloudinaryImageStorageService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
@@ -38,6 +39,9 @@ public class AccountController {
 
     @Autowired
     private AccountServiceImpl accountServiceIMPL;
+
+    @Autowired
+    private CloudinaryImageStorageService cloudinaryStorage;
 
     @Autowired
     private AuthService authService;
@@ -183,6 +187,7 @@ public class AccountController {
             // IMAGE
             // =====================================================
 
+
             @RequestParam(required = false)
             MultipartFile image
     ) {
@@ -197,7 +202,7 @@ public class AccountController {
 
             account.setCustomerCategory(customerCategory);
 
-            if(modeOfOperation != null){
+            if (modeOfOperation != null && !modeOfOperation.isBlank()) {
 
                 account.setModeOfOperation(
                         ModeOfOperation.valueOf(modeOfOperation)
@@ -210,11 +215,8 @@ public class AccountController {
             // =====================================================
 
             account.setFullName(fullName);
-
             account.setNationalId(nationalId);
-
             account.setDateOfBirth(dateOfBirth);
-
             account.setGender(gender);
 
             // =====================================================
@@ -232,9 +234,7 @@ public class AccountController {
             }
 
             account.setResidentialAddress(residentialAddress);
-
             account.setCity(city);
-
             account.setCounty(county);
 
             // =====================================================
@@ -242,19 +242,12 @@ public class AccountController {
             // =====================================================
 
             account.setEmploymentStatus(employmentStatus);
-
             account.setEmployerName(employerName);
-
             account.setBusinessType(businessType);
-
             account.setBusinessLocation(businessLocation);
-
             account.setMonthlyIncome(monthlyIncome);
-
             account.setMonthlyExpenses(monthlyExpenses);
-
             account.setSourceOfFunds(sourceOfFunds);
-
             account.setAccountType(accountType);
 
             // =====================================================
@@ -262,35 +255,20 @@ public class AccountController {
             // =====================================================
 
             account.setOrganizationName(organizationName);
-
             account.setRegistrationNumber(registrationNumber);
-
             account.setRegistrationDate(registrationDate);
-
             account.setKraPin(kraPin);
-
             account.setIndustry(industry);
-
             account.setWebsite(website);
-
             account.setPostalAddress(postalAddress);
-
             account.setCountry(country);
-
             account.setAnnualTurnover(annualTurnover);
-
             account.setAuthorizedCapital(authorizedCapital);
-
             account.setNumberOfEmployees(numberOfEmployees);
-
             account.setOperatingLicenseNumber(operatingLicenseNumber);
-
             account.setBoardResolutionNumber(boardResolutionNumber);
-
             account.setConstitutionNumber(constitutionNumber);
-
             account.setTrustDeedNumber(trustDeedNumber);
-
             account.setCertificateNumber(certificateNumber);
 
             // =====================================================
@@ -298,76 +276,51 @@ public class AccountController {
             // =====================================================
 
             account.setNextOfKinName(nextOfKinName);
-
             account.setNextOfKinPhone(nextOfKinPhone);
-
             account.setNextOfKinRelationship(nextOfKinRelationship);
 
             // =====================================================
-            // IMAGE
+            // IMAGE - CLOUDINARY
             // =====================================================
 
-            if(image != null && !image.isEmpty()){
+            if (image != null && !image.isEmpty()) {
 
-                String uploadDir = "uploads/";
-
-                File dir = new File(uploadDir);
-
-                if(!dir.exists()){
-
-                    dir.mkdirs();
-
-                }
-
-                String fileName =
-                        UUID.randomUUID() + "_" +
-                                image.getOriginalFilename();
-
-                Path filePath =
-                        Paths.get(uploadDir,fileName);
-
-                Files.write(filePath,image.getBytes());
-
-                account.setImageUrl(
-                        filePath.toString().replace("\\","/")
+                String imageUrl = cloudinaryStorage.upload(
+                        image,
+                        "credicore/accounts"
                 );
+
+                account.setImageUrl(imageUrl);
 
             }
 
-            Account saved =
-                    accountService.createAccount(account);
+            // =====================================================
+            // SAVE ACCOUNT
+            // =====================================================
+
+            Account saved = accountService.createAccount(account);
 
             return ResponseEntity.ok(Map.of(
-
-                    "status","SUCCESS",
-
-                    "message","Account opened successfully.",
-
-                    "account",accountService.toDTO(saved)
-
+                    "status", "SUCCESS",
+                    "message", "Account opened successfully.",
+                    "account", accountService.toDTO(saved)
             ));
 
-        }
+        } catch (Exception ex) {
 
-        catch(Exception ex){
-
-            logger.error(ex.getMessage(),ex);
+            logger.error(ex.getMessage(), ex);
 
             return ResponseEntity.badRequest().body(
-
                     Map.of(
-
-                            "status","FAILED",
-
-                            "message",ex.getMessage()
-
+                            "status", "FAILED",
+                            "message", ex.getMessage()
                     )
-
             );
 
         }
 
     }
+
 
     // ============================================================
 // UPLOAD ACCOUNT DOCUMENT
@@ -1272,20 +1225,41 @@ public class AccountController {
         );
     }
 
+
     // Get account image
     @GetMapping("/image/{nationalId}")
-    public ResponseEntity<Resource> getImage(@PathVariable String nationalId) throws IOException {
+    public ResponseEntity<?> getImage(@PathVariable String nationalId) throws IOException {
+
         Account account = accountService.getByNationalId(nationalId);
-        if (account == null || account.getImageUrl() == null) {
+
+        if (account == null || account.getImageUrl() == null
+                || account.getImageUrl().isBlank()) {
             return ResponseEntity.notFound().build();
         }
-        Path path = Paths.get(account.getImageUrl());
+
+        String imageUrl = account.getImageUrl();
+
+        // Cloudinary image: return its HTTPS URL
+        if (imageUrl.startsWith("https://res.cloudinary.com/")) {
+            return ResponseEntity.ok(
+                    Map.of("imageUrl", imageUrl)
+            );
+        }
+
+        // Legacy locally stored image
+        Path path = Paths.get(imageUrl).toAbsolutePath().normalize();
+
+        if (!Files.exists(path) || !Files.isRegularFile(path)) {
+            return ResponseEntity.notFound().build();
+        }
+
         Resource resource = new UrlResource(path.toUri());
 
         return ResponseEntity.ok()
-                .contentType(MediaType.IMAGE_JPEG)
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
                 .body(resource);
     }
+
 
     // Deposit into account
     @PostMapping("/deposit")

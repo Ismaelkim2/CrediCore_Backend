@@ -50,6 +50,9 @@ public class LoanServiceImpl implements LoanService {
     @Autowired
     private AccountService accountService;
 
+    @Autowired
+    private CloudinaryImageStorageService cloudinaryStorage;
+
     /**
      * AUTHORITATIVE BACKEND CREDIT ELIGIBILITY ENGINE.
      *
@@ -2351,68 +2354,35 @@ public class LoanServiceImpl implements LoanService {
     // IMAGE UPLOAD
     // =========================================================
 
+
+    // =========================================================
+    // IMAGE UPLOAD - CLOUDINARY
+    // =========================================================
+
     private void handleImageUpload(
             MultipartFile file,
             Account account
     ) {
 
-        if (file == null
-                || file.isEmpty()) {
-
+        if (file == null || file.isEmpty()) {
             return;
         }
 
-        try {
-
-            String originalFilename =
-                    file.getOriginalFilename();
-
-            String cleanFilename =
-                    StringUtils.cleanPath(
-                            originalFilename != null
-                                    ? originalFilename
-                                    : "profile-image"
-                    );
-
-            String filename =
-                    System.currentTimeMillis()
-                            + "_"
-                            + cleanFilename;
-
-            Path uploadPath =
-                    Paths.get(
-                            "uploads/profile/"
-                    );
-
-            Files.createDirectories(
-                    uploadPath
-            );
-
-            Path filePath =
-                    uploadPath.resolve(
-                            filename
-                    );
-
-            Files.copy(
-                    file.getInputStream(),
-                    filePath,
-                    StandardCopyOption.REPLACE_EXISTING
-            );
-
-            account.setImageUrl(
-                    "uploads/profile/"
-                            + filename
-            );
-
-        } catch (Exception e) {
-
-            throw new RuntimeException(
-                    "Failed to upload image: "
-                            + e.getMessage(),
-                    e
+        if (account == null) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Applicant account is required for image upload."
             );
         }
+
+        String imageUrl = cloudinaryStorage.upload(
+                file,
+                "credicore/accounts"
+        );
+
+        account.setImageUrl(imageUrl);
     }
+
 
     // =========================================================
     // DELETE LOAN

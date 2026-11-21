@@ -81,28 +81,71 @@ public class AuthService {
         return response;
     }
 
-    /** Get current user info */
     public Map<String, Object> getCurrentUser(String email) {
+
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
-        Account account = accountRepository.findByNationalId(user.getNationalId()).orElse(null);
+        Account account = accountRepository
+                .findByNationalId(user.getNationalId())
+                .orElse(null);
 
         Map<String, Object> response = new HashMap<>();
+
         response.put("name", user.getName());
         response.put("email", user.getEmail());
         response.put("role", user.getRole().name());
         response.put("nationalId", user.getNationalId());
-        response.put("phoneNumber", account != null ? account.getPhoneNumber() : user.getPhoneNumber());
-        response.put("accountNumber", account != null ? account.getAccountNumber() : null);
-        response.put("branch", account != null ? account.getBranch() : "Head Office");
-        response.put("userImageUrl",
-                account != null && account.getImageUrl() != null
-                        ? "http://localhost:8080/api/accounts/image/" + user.getNationalId()
-                        : (user.getUserImageUrl() != null
-                        ? "http://localhost:8080/" + user.getUserImageUrl()
-                        : "assets/default-admin.png")
+
+        response.put(
+                "phoneNumber",
+                account != null ? account.getPhoneNumber() : user.getPhoneNumber()
         );
+
+        response.put(
+                "accountNumber",
+                account != null ? account.getAccountNumber() : null
+        );
+
+        response.put(
+                "branch",
+                account != null ? account.getBranch() : "Head Office"
+        );
+
+        // Prefer the user's uploaded profile photograph.
+        String imageUrl = user.getUserImageUrl();
+
+        // Fall back to the account photograph if no user photograph exists.
+        if (imageUrl == null || imageUrl.isBlank()) {
+
+            if (account != null && account.getImageUrl() != null
+                    && !account.getImageUrl().isBlank()) {
+
+                String accountImage = account.getImageUrl();
+
+                if (accountImage.startsWith("http://")
+                        || accountImage.startsWith("https://")) {
+
+                    imageUrl = accountImage;
+
+                } else {
+
+                    imageUrl = "http://localhost:8080/api/accounts/image/"
+                            + user.getNationalId();
+                }
+
+            } else {
+                imageUrl = "assets/default-admin.png";
+            }
+
+        } else if (!imageUrl.startsWith("http://")
+                && !imageUrl.startsWith("https://")
+                && !imageUrl.startsWith("assets/")) {
+
+            imageUrl = "http://localhost:8080/" + imageUrl;
+        }
+
+        response.put("userImageUrl", imageUrl);
 
         return response;
     }

@@ -1,3 +1,4 @@
+
 package com.example.Credit.management.services;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -8,9 +9,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
+import java.util.Locale;
 import java.util.Set;
-import java.util.UUID;
 
 @Service
 public class TenantPropertyImageStorageService {
@@ -25,6 +25,13 @@ public class TenantPropertyImageStorageService {
 
     @Value("${app.upload.property-images-dir:uploads/properties}")
     private String uploadDirectory;
+
+    private final CloudinaryImageStorageService cloudinaryStorage;
+
+    public TenantPropertyImageStorageService(
+            CloudinaryImageStorageService cloudinaryStorage) {
+        this.cloudinaryStorage = cloudinaryStorage;
+    }
 
     public String store(MultipartFile image) {
 
@@ -41,53 +48,16 @@ public class TenantPropertyImageStorageService {
         String contentType = image.getContentType();
 
         if (contentType == null ||
-                !ALLOWED_TYPES.contains(contentType.toLowerCase())) {
+                !ALLOWED_TYPES.contains(contentType.toLowerCase(Locale.ROOT))) {
             throw new IllegalArgumentException(
                     "Only JPG, PNG and WEBP images are allowed."
             );
         }
 
-        String extension = switch (contentType.toLowerCase()) {
-            case "image/jpeg" -> ".jpg";
-            case "image/png" -> ".png";
-            case "image/webp" -> ".webp";
-            default -> throw new IllegalArgumentException(
-                    "Unsupported image type."
-            );
-        };
-
-        Path directory = Paths.get(uploadDirectory)
-                .toAbsolutePath()
-                .normalize();
-
-        String filename = UUID.randomUUID() + extension;
-        Path destination = directory.resolve(filename).normalize();
-
-        if (!destination.startsWith(directory)) {
-            throw new IllegalArgumentException(
-                    "Invalid image destination."
-            );
-        }
-
-        try {
-            Files.createDirectories(directory);
-
-            try (var inputStream = image.getInputStream()) {
-                Files.copy(
-                        inputStream,
-                        destination,
-                        StandardCopyOption.REPLACE_EXISTING
-                );
-            }
-
-            return "/uploads/properties/" + filename;
-
-        } catch (IOException exception) {
-            throw new RuntimeException(
-                    "Unable to store property image.",
-                    exception
-            );
-        }
+        return cloudinaryStorage.upload(
+                image,
+                "credicore/properties"
+        );
     }
 
     public void delete(String imageUrl) {
@@ -96,9 +66,25 @@ public class TenantPropertyImageStorageService {
             return;
         }
 
+        if (imageUrl.startsWith("https://res.cloudinary.com/")) {
+            cloudinaryStorage.delete(imageUrl);
+            return;
+        }
+
+        // Preserve deletion support for previously uploaded local images.
+        if (!imageUrl.startsWith("/uploads/properties/")) {
+            return;
+        }
+
         String filename = imageUrl.substring(
                 imageUrl.lastIndexOf('/') + 1
         );
+
+        if (filename.isBlank()
+                || filename.contains("/")
+                || filename.contains("\\")) {
+            return;
+        }
 
         Path directory = Paths.get(uploadDirectory)
                 .toAbsolutePath()

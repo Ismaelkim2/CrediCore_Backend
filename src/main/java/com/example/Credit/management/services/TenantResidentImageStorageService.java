@@ -1,4 +1,3 @@
-
 package com.example.Credit.management.services;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -12,9 +11,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
 import java.util.Locale;
-import java.util.UUID;
 
 @Service
 public class TenantResidentImageStorageService {
@@ -26,6 +23,13 @@ public class TenantResidentImageStorageService {
     @Value("${app.upload.tenant-images-dir:uploads/tenants}")
     private String uploadDirectory;
 
+    private final CloudinaryImageStorageService cloudinaryStorage;
+
+    public TenantResidentImageStorageService(
+            CloudinaryImageStorageService cloudinaryStorage) {
+        this.cloudinaryStorage = cloudinaryStorage;
+    }
+
     // =========================================================
     // STORE TENANT PHOTOGRAPH
     // =========================================================
@@ -36,7 +40,6 @@ public class TenantResidentImageStorageService {
             return null;
         }
 
-        // Validate file size.
         if (image.getSize() > MAX_FILE_SIZE) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
@@ -45,7 +48,7 @@ public class TenantResidentImageStorageService {
         }
 
         try {
-            // Read file signature rather than trusting MIME type.
+            // Validate actual file signature.
             byte[] header = readHeader(image);
 
             String extension = detectImageExtension(header);
@@ -57,46 +60,22 @@ public class TenantResidentImageStorageService {
                 );
             }
 
-            // Check supplied MIME type when available.
+            // Verify MIME type against actual file format.
             validateContentType(image.getContentType(), extension);
 
-            Path directory = Paths.get(uploadDirectory)
-                    .toAbsolutePath()
-                    .normalize();
-
-            String filename = UUID.randomUUID() + extension;
-
-            Path destination = directory.resolve(filename).normalize();
-
-            if (!destination.startsWith(directory)) {
-                throw new ResponseStatusException(
-                        HttpStatus.BAD_REQUEST,
-                        "Invalid image destination."
-                );
-            }
-
-            Files.createDirectories(directory);
-
-            // CREATE_NEW prevents accidental overwriting.
-            try (InputStream inputStream = image.getInputStream()) {
-
-                Files.copy(
-                        inputStream,
-                        destination
-                );
-            }
-
-            return PUBLIC_IMAGE_PATH + filename;
+            // Upload validated image to Cloudinary.
+            return cloudinaryStorage.upload(
+                    image,
+                    "credicore/tenants"
+            );
 
         } catch (ResponseStatusException exception) {
-
             throw exception;
 
         } catch (IOException exception) {
-
             throw new ResponseStatusException(
                     HttpStatus.INTERNAL_SERVER_ERROR,
-                    "Unable to store tenant photograph.",
+                    "Unable to process tenant photograph.",
                     exception
             );
         }
@@ -241,6 +220,13 @@ public class TenantResidentImageStorageService {
             return;
         }
 
+        // Delete new Cloudinary photographs.
+        if (imageUrl.startsWith("https://res.cloudinary.com/")) {
+            cloudinaryStorage.delete(imageUrl);
+            return;
+        }
+
+        // Preserve deletion of previously stored local photographs.
         if (!imageUrl.startsWith(PUBLIC_IMAGE_PATH)) {
             return;
         }
@@ -252,7 +238,6 @@ public class TenantResidentImageStorageService {
         // Only allow generated UUID image filenames.
         if (!filename.matches(
                 "^[a-fA-F0-9-]{36}\\.(jpg|png|webp)$")) {
-
             return;
         }
 
@@ -270,11 +255,9 @@ public class TenantResidentImageStorageService {
         }
 
         try {
-
             Files.deleteIfExists(file);
 
         } catch (IOException exception) {
-
             throw new ResponseStatusException(
                     HttpStatus.INTERNAL_SERVER_ERROR,
                     "Unable to delete the previous tenant photograph.",
