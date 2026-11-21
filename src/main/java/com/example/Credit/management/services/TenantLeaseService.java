@@ -1,3 +1,4 @@
+
 package com.example.Credit.management.services;
 
 import com.example.Credit.management.DTO.TenantLeaseRequest;
@@ -29,25 +30,32 @@ import java.util.UUID;
 public class TenantLeaseService {
 
     private static final List<TenantLease.LeaseStatus> BLOCKING_STATUSES =
-            List.of(TenantLease.LeaseStatus.DRAFT, TenantLease.LeaseStatus.ACTIVE);
+            List.of(
+                    TenantLease.LeaseStatus.DRAFT,
+                    TenantLease.LeaseStatus.ACTIVE
+            );
 
     private final TenantLeaseRepository leaseRepository;
     private final TenantResidentRepository tenantRepository;
     private final TenantUnitRepository unitRepository;
     private final TenantPropertyRepository propertyRepository;
     private final UserRepository userRepository;
+    private final TenantRentService rentService;
 
     public TenantLeaseService(
             TenantLeaseRepository leaseRepository,
             TenantResidentRepository tenantRepository,
             TenantUnitRepository unitRepository,
             TenantPropertyRepository propertyRepository,
-            UserRepository userRepository) {
+            UserRepository userRepository,
+            TenantRentService rentService) {
+
         this.leaseRepository = leaseRepository;
         this.tenantRepository = tenantRepository;
         this.unitRepository = unitRepository;
         this.propertyRepository = propertyRepository;
         this.userRepository = userRepository;
+        this.rentService = rentService;
     }
 
     public TenantLeaseResponse create(
@@ -59,19 +67,24 @@ public class TenantLeaseService {
 
         TenantResident tenant = tenantRepository
                 .findByIdAndOwner_Id(request.tenantId(), owner.getId())
-                .orElseThrow(() -> notFound("Tenant not found in your portfolio."));
+                .orElseThrow(() ->
+                        notFound("Tenant not found in your portfolio."));
 
         if (tenant.getStatus() != TenantResident.TenantStatus.ACTIVE) {
-            throw badRequest("An inactive tenant cannot be assigned a new lease.");
+            throw badRequest(
+                    "An inactive tenant cannot be assigned a new lease.");
         }
 
         TenantUnit unit = unitRepository
                 .findUnitForLeaseUpdate(request.unitId())
                 .orElseThrow(() -> notFound("Unit not found."));
 
-        TenantProperty property = propertyRepository
-                .findByIdAndOwner_Id(unit.getProperty().getId(), owner.getId())
-                .orElseThrow(() -> notFound("Unit not found in your portfolio."));
+        propertyRepository
+                .findByIdAndOwner_Id(
+                        unit.getProperty().getId(),
+                        owner.getId())
+                .orElseThrow(() ->
+                        notFound("Unit not found in your portfolio."));
 
         if (unit.getStatus() != TenantUnit.UnitStatus.VACANT) {
             throw conflict("Only vacant units can be assigned a new lease.");
@@ -85,8 +98,14 @@ public class TenantLeaseService {
         );
 
         TenantLease lease = new TenantLease();
-        lease.setLeaseCode("LEASE-" + UUID.randomUUID()
-                .toString().substring(0, 8).toUpperCase());
+
+        lease.setLeaseCode(
+                "LEASE-" + UUID.randomUUID()
+                        .toString()
+                        .substring(0, 8)
+                        .toUpperCase()
+        );
+
         lease.setTenant(tenant);
         lease.setUnit(unit);
         lease.setOwner(owner);
@@ -102,15 +121,18 @@ public class TenantLeaseService {
         try {
             return toResponse(leaseRepository.saveAndFlush(lease));
         } catch (DataIntegrityViolationException ex) {
-            throw conflict("The lease could not be saved because of a duplicate or conflicting record.");
+            throw conflict(
+                    "The lease could not be saved because of a duplicate or conflicting record.");
         }
     }
 
     @Transactional(readOnly = true)
     public List<TenantLeaseResponse> getAll(String authenticatedEmail) {
+
         User owner = getOwner(authenticatedEmail);
 
-        return leaseRepository.findByOwner_IdOrderByCreatedAtDesc(owner.getId())
+        return leaseRepository
+                .findByOwner_IdOrderByCreatedAtDesc(owner.getId())
                 .stream()
                 .map(this::toResponse)
                 .toList();
@@ -122,6 +144,7 @@ public class TenantLeaseService {
             String authenticatedEmail) {
 
         User owner = getOwner(authenticatedEmail);
+
         return toResponse(findOwnedLease(leaseId, owner.getId()));
     }
 
@@ -139,7 +162,8 @@ public class TenantLeaseService {
         LocalDate today = LocalDate.now();
 
         if (lease.getStartDate().isAfter(today)) {
-            throw badRequest("A future lease cannot be activated before its start date.");
+            throw badRequest(
+                    "A future lease cannot be activated before its start date.");
         }
 
         if (lease.getEndDate().isBefore(today)) {
@@ -147,7 +171,8 @@ public class TenantLeaseService {
         }
 
         // Lock the unit row to serialize concurrent activation requests.
-        TenantUnit unit = unitRepository.findUnitForLeaseUpdate(lease.getUnit().getId())
+        TenantUnit unit = unitRepository
+                .findUnitForLeaseUpdate(lease.getUnit().getId())
                 .orElseThrow(() -> notFound("Unit not found."));
 
         if (unit.getStatus() != TenantUnit.UnitStatus.VACANT) {
@@ -163,14 +188,28 @@ public class TenantLeaseService {
 
         lease.setStatus(TenantLease.LeaseStatus.ACTIVE);
         lease.setActiveUnitId(unit.getId());
+
         unit.setStatus(TenantUnit.UnitStatus.OCCUPIED);
 
         try {
             leaseRepository.saveAndFlush(lease);
             unitRepository.saveAndFlush(unit);
+
         } catch (DataIntegrityViolationException ex) {
             throw conflict("This unit already has an active lease.");
         }
+
+        /*
+         * Generate rent charges immediately after successful activation.
+         *
+         * This runs in the same transaction.
+         * Existing charges are protected by the lease-period
+         * duplicate check in TenantRentService.
+         *
+         * Available advance payments are also applied to
+         * newly generated rent charges.
+         */
+        rentService.generateRentCharges();
 
         return toResponse(lease);
     }
@@ -186,7 +225,8 @@ public class TenantLeaseService {
             throw conflict("Only active leases can be terminated.");
         }
 
-        TenantUnit unit = unitRepository.findUnitForLeaseUpdate(lease.getUnit().getId())
+        TenantUnit unit = unitRepository
+                .findUnitForLeaseUpdate(lease.getUnit().getId())
                 .orElseThrow(() -> notFound("Unit not found."));
 
         lease.setStatus(TenantLease.LeaseStatus.TERMINATED);
@@ -205,6 +245,7 @@ public class TenantLeaseService {
     }
 
     private void validateRequest(TenantLeaseRequest request) {
+
         if (request == null) {
             throw badRequest("Lease details are required.");
         }
@@ -218,7 +259,8 @@ public class TenantLeaseService {
         }
 
         if (request.endDate().isBefore(request.startDate())) {
-            throw badRequest("Lease end date must be on or after the start date.");
+            throw badRequest(
+                    "Lease end date must be on or after the start date.");
         }
 
         if (request.monthlyRent() == null
@@ -247,33 +289,47 @@ public class TenantLeaseService {
         boolean overlap = excludedLeaseId == null
                 ? leaseRepository
                 .existsByUnit_IdAndStatusInAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
-                        unitId, BLOCKING_STATUSES, endDate, startDate)
+                        unitId,
+                        BLOCKING_STATUSES,
+                        endDate,
+                        startDate)
                 : leaseRepository
                 .existsByUnit_IdAndStatusInAndStartDateLessThanEqualAndEndDateGreaterThanEqualAndIdNot(
-                        unitId, BLOCKING_STATUSES, endDate, startDate, excludedLeaseId);
+                        unitId,
+                        BLOCKING_STATUSES,
+                        endDate,
+                        startDate,
+                        excludedLeaseId);
 
         if (overlap) {
-            throw conflict("This unit already has a draft or active lease overlapping those dates.");
+            throw conflict(
+                    "This unit already has a draft or active lease overlapping those dates.");
         }
     }
 
     private User getOwner(String email) {
+
         if (email == null || email.isBlank()) {
             throw new ResponseStatusException(
-                    HttpStatus.UNAUTHORIZED, "Authenticated user could not be identified.");
+                    HttpStatus.UNAUTHORIZED,
+                    "Authenticated user could not be identified.");
         }
 
         return userRepository.findByEmail(email.trim())
                 .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.UNAUTHORIZED, "Authenticated user was not found."));
+                        HttpStatus.UNAUTHORIZED,
+                        "Authenticated user was not found."));
     }
 
     private TenantLease findOwnedLease(Long leaseId, Long ownerId) {
+
         return leaseRepository.findByIdAndOwner_Id(leaseId, ownerId)
-                .orElseThrow(() -> notFound("Lease not found in your portfolio."));
+                .orElseThrow(() ->
+                        notFound("Lease not found in your portfolio."));
     }
 
     private TenantLeaseResponse toResponse(TenantLease lease) {
+
         TenantUnit unit = lease.getUnit();
 
         return new TenantLeaseResponse(
@@ -303,14 +359,20 @@ public class TenantLeaseService {
     }
 
     private ResponseStatusException badRequest(String message) {
-        return new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
+        return new ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                message);
     }
 
     private ResponseStatusException conflict(String message) {
-        return new ResponseStatusException(HttpStatus.CONFLICT, message);
+        return new ResponseStatusException(
+                HttpStatus.CONFLICT,
+                message);
     }
 
     private ResponseStatusException notFound(String message) {
-        return new ResponseStatusException(HttpStatus.NOT_FOUND, message);
+        return new ResponseStatusException(
+                HttpStatus.NOT_FOUND,
+                message);
     }
 }
