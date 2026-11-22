@@ -107,6 +107,38 @@ public class AuthController {
                 .body(response);
     }
 
+
+    // =====================================================
+// GET STAFF DIRECTORY - ADMIN ONLY
+// =====================================================
+
+    @GetMapping("/admin/staff")
+    public ResponseEntity<?> getAllStaff() {
+
+        return ResponseEntity.ok(
+                staffOnboardingService.getAllStaff()
+        );
+    }
+
+// =====================================================
+// REGENERATE STAFF INVITATION - ADMIN ONLY
+// =====================================================
+
+    @PostMapping("/admin/staff/{userId}/invitation")
+    public ResponseEntity<?> regenerateStaffInvitation(
+            @PathVariable Long userId,
+            @RequestParam(defaultValue = "false") boolean sendEmail
+    ) {
+
+        Map<String, Object> response =
+                staffOnboardingService.regenerateStaffInvitation(
+                        userId,
+                        sendEmail
+                );
+
+        return ResponseEntity.ok(response);
+    }
+
     // =====================================================
     // VALIDATE STAFF INVITATION - PUBLIC
     // =====================================================
@@ -581,4 +613,6 @@ public class AuthController {
 
         return response;
     }
+
+
 }
