@@ -298,16 +298,84 @@ public class AuthService {
 
 
     /** Update user details */
-    public User updateUserDetails(User userRequest) {
-        User existingUser = userRepository.findByNationalId(userRequest.getNationalId())
+
+    /**
+     * Update the authenticated user's permitted profile details.
+     * The user's identity comes from the authenticated email.
+     */
+    public Map<String, Object> updateUserDetails(
+            String authenticatedEmail,
+            Map<String, String> request
+    ) {
+        User existingUser = userRepository.findByEmail(authenticatedEmail)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
-        existingUser.setName(userRequest.getName());
-        existingUser.setEmail(userRequest.getEmail());
-        existingUser.setUserImageUrl(userRequest.getUserImageUrl());
+        String name = request.get("name");
+        String phoneNumber = request.get("phoneNumber");
 
-        return userRepository.save(existingUser);
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("Name is required");
+        }
+
+        if (name.trim().length() > 150) {
+            throw new IllegalArgumentException("Name is too long");
+        }
+
+        if (phoneNumber != null && phoneNumber.trim().length() > 30) {
+            throw new IllegalArgumentException("Phone number is too long");
+        }
+
+        existingUser.setName(name.trim());
+
+        // Update the user's own phone number.
+        // Do not overwrite account information or branch details.
+        existingUser.setPhoneNumber(
+                phoneNumber == null || phoneNumber.isBlank()
+                        ? null
+                        : phoneNumber.trim()
+        );
+
+        userRepository.save(existingUser);
+
+        return getCurrentUser(existingUser.getEmail());
     }
+
+    /**
+     * Change password for the authenticated user.
+     */
+    public void changePassword(
+            String authenticatedEmail,
+            String currentPassword,
+            String newPassword
+    ) {
+        User user = userRepository.findByEmail(authenticatedEmail)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        if (currentPassword == null || currentPassword.isBlank()) {
+            throw new IllegalArgumentException("Current password is required");
+        }
+
+        if (newPassword == null || newPassword.length() < 8
+                || !newPassword.matches("^(?=.*[A-Za-z])(?=.*\\d).+$")) {
+            throw new IllegalArgumentException(
+                    "New password must contain at least 8 characters, including letters and numbers"
+            );
+        }
+
+        if (!passwordEncoder.matches(currentPassword, user.getPassword())) {
+            throw new IllegalArgumentException("Current password is incorrect");
+        }
+
+        if (passwordEncoder.matches(newPassword, user.getPassword())) {
+            throw new IllegalArgumentException(
+                    "New password must be different from the current password"
+            );
+        }
+
+        user.setPassword(passwordEncoder.encode(newPassword));
+        userRepository.save(user);
+    }
+
 
     /** Generate 6-digit OTP */
     private String generateOtp() {

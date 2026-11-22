@@ -204,26 +204,72 @@ public class AuthController {
         ));
     }
 
-    /* GET CURRENT USER */
+
+    /**
+     * GET CURRENT AUTHENTICATED USER
+     */
     @GetMapping("/me")
     public ResponseEntity<?> getLoggedInUser(
-            HttpServletRequest request
+            Authentication authentication
     ) {
-
-        String header = request.getHeader("Authorization");
-
-        if (header == null || !header.startsWith("Bearer ")) {
+        if (authentication == null || !authentication.isAuthenticated()
+                || "anonymousUser".equals(authentication.getPrincipal())) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("error", "Missing token"));
+                    .body(Map.of("message", "Authentication required"));
         }
 
-        String token = header.substring(7);
-        String email = jwtUtil.getEmailFromToken(token);
-
         return ResponseEntity.ok(
-                authService.getCurrentUser(email)
+                authService.getCurrentUser(authentication.getName())
         );
     }
+
+
+    /**
+     * UPDATE AUTHENTICATED USER PROFILE
+     */
+    @PutMapping("/me")
+    public ResponseEntity<?> updateLoggedInUser(
+            @RequestBody Map<String, String> request,
+            Authentication authentication
+    ) {
+        if (authentication == null || !authentication.isAuthenticated()
+                || "anonymousUser".equals(authentication.getPrincipal())) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("message", "Authentication required"));
+        }
+
+        return ResponseEntity.ok(
+                authService.updateUserDetails(authentication.getName(), request)
+        );
+    }
+
+    /**
+     * CHANGE AUTHENTICATED USER PASSWORD
+     */
+    @PutMapping("/change-password")
+    public ResponseEntity<?> changePassword(
+            @RequestBody Map<String, String> request,
+            Authentication authentication
+    ) {
+        if (authentication == null || !authentication.isAuthenticated()
+                || "anonymousUser".equals(authentication.getPrincipal())) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("message", "Authentication required"));
+        }
+
+        authService.changePassword(
+                authentication.getName(),
+                request.get("currentPassword"),
+                request.get("newPassword")
+        );
+
+        return ResponseEntity.ok(
+                Map.of("message", "Password changed successfully")
+        );
+    }
+
+
+
 
     /* GET ALL USERS */
     @GetMapping("/users/all")

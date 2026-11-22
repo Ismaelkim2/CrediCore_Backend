@@ -1,5 +1,4 @@
 package com.example.Credit.management.controller;
-
 import com.example.Credit.management.DTO.AccountDTO;
 import com.example.Credit.management.DTO.CustomerProfileDTO;
 import com.example.Credit.management.Model.*;
@@ -15,6 +14,7 @@ import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -1292,14 +1292,55 @@ public class AccountController {
     }
 
     // Update user profile
+
+// ============================================================
+// UPDATE AUTHENTICATED USER PROFILE
+// ============================================================
+
     @PutMapping("/updateProfile")
-    public ResponseEntity<?> updateProfile(@RequestBody User userRequest) {
+    public ResponseEntity<?> updateProfile(
+            @RequestBody Map<String, String> request,
+            Authentication authentication
+    ) {
         try {
-            User updatedUser = authService.updateUserDetails(userRequest);
+
+            if (authentication == null ||
+                    !authentication.isAuthenticated() ||
+                    "anonymousUser".equals(authentication.getPrincipal())) {
+
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of(
+                                "message", "Authentication required"
+                        ));
+            }
+
+            Map<String, Object> updatedUser =
+                    authService.updateUserDetails(
+                            authentication.getName(),
+                            request
+                    );
+
             return ResponseEntity.ok(updatedUser);
+
+        } catch (IllegalArgumentException e) {
+
+            return ResponseEntity.badRequest().body(
+                    Map.of(
+                            "error", "Invalid profile details",
+                            "message", e.getMessage()
+                    )
+            );
+
         } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                    .body(Map.of("error", "Failed to update profile", "message", e.getMessage()));
+
+            logger.error("Failed to update authenticated user profile", e);
+
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of(
+                            "error", "Failed to update profile",
+                            "message", "An unexpected error occurred"
+                    ));
         }
     }
+
 }
