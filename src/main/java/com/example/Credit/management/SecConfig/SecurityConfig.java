@@ -8,8 +8,6 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
@@ -26,10 +24,7 @@ import java.util.List;
 @Configuration
 public class SecurityConfig {
 
-    @Bean
-    public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder();
-    }
+    // PasswordEncoder is intentionally defined only in AppConfig.java.
 
     @Bean
     public SecurityFilterChain filterChain(
@@ -45,7 +40,7 @@ public class SecurityConfig {
 
                 .authorizeHttpRequests(auth -> auth
 
-                        // PUBLIC AUTHENTICATION ENDPOINTS
+                        // PUBLIC AUTHENTICATION AND INVITATION ENDPOINTS
                         .requestMatchers(
                                 "/api/auth/login",
                                 "/api/auth/register",
@@ -69,12 +64,13 @@ public class SecurityConfig {
                                 "/api/auth/admin/**"
                         ).hasRole("ADMIN")
 
-                        // STAFF DIRECTORY
+                        // STAFF CREATION
                         .requestMatchers(
                                 org.springframework.http.HttpMethod.POST,
                                 "/api/loans/staff"
                         ).hasRole("ADMIN")
 
+                        // STAFF DIRECTORY
                         .requestMatchers(
                                 org.springframework.http.HttpMethod.GET,
                                 "/api/loans/staff"
@@ -117,11 +113,8 @@ public class SecurityConfig {
         ));
 
         config.setAllowedHeaders(List.of("*"));
-
         config.setExposedHeaders(List.of("Authorization"));
-
         config.setAllowCredentials(true);
-
         config.setMaxAge(3600L);
 
         UrlBasedCorsConfigurationSource source =
@@ -134,10 +127,8 @@ public class SecurityConfig {
 
     @Bean
     public ApplicationRunner runner(Environment env) {
-
         return args -> System.out.println(
-                ">>> SERVER PORT = " +
-                        env.getProperty("server.port")
+                ">>> SERVER PORT = " + env.getProperty("server.port")
         );
     }
 
