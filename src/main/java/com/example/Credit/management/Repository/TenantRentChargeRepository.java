@@ -2,7 +2,9 @@
 package com.example.Credit.management.Repository;
 
 import com.example.Credit.management.Model.TenantRentCharge;
+
 import jakarta.persistence.LockModeType;
+
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -21,6 +23,7 @@ public interface TenantRentChargeRepository
             LocalDate periodStart
     );
 
+    // TENANT_AGENT: list only their own rent charges.
     List<TenantRentCharge> findByOwner_IdOrderByDueDateAsc(
             Long ownerId
     );
@@ -30,6 +33,13 @@ public interface TenantRentChargeRepository
             Long leaseId
     );
 
+    Optional<TenantRentCharge> findByIdAndOwner_IdAndLease_Id(
+            Long chargeId,
+            Long ownerId,
+            Long leaseId
+    );
+
+    // Lock outstanding charges belonging to a specific owner and lease.
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
         select c
@@ -47,6 +57,7 @@ public interface TenantRentChargeRepository
             List<TenantRentCharge.ChargeStatus> statuses
     );
 
+    // Lock a charge only when it belongs to the specified owner.
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
         select c
@@ -64,6 +75,7 @@ public interface TenantRentChargeRepository
             List<TenantRentCharge.ChargeStatus> statuses
     );
 
+    // TENANT_AGENT: rent charged during a selected period.
     @Query("""
         select coalesce(sum(c.amount), 0)
         from TenantRentCharge c
@@ -77,6 +89,19 @@ public interface TenantRentChargeRepository
             @Param("nextMonth") LocalDate nextMonth
     );
 
+    // ADMIN: rent charged across all portfolios during a selected period.
+    @Query("""
+        select coalesce(sum(c.amount), 0)
+        from TenantRentCharge c
+        where c.periodStart >= :monthStart
+          and c.periodStart < :nextMonth
+        """)
+    BigDecimal sumAllRentChargedForPeriod(
+            @Param("monthStart") LocalDate monthStart,
+            @Param("nextMonth") LocalDate nextMonth
+    );
+
+    // TENANT_AGENT: total outstanding rent in their portfolio.
     @Query("""
         select coalesce(sum(c.amount - c.paidAmount), 0)
         from TenantRentCharge c
@@ -87,6 +112,15 @@ public interface TenantRentChargeRepository
             @Param("ownerId") Long ownerId
     );
 
+    // ADMIN: total outstanding rent across all portfolios.
+    @Query("""
+        select coalesce(sum(c.amount - c.paidAmount), 0)
+        from TenantRentCharge c
+        where c.paidAmount < c.amount
+        """)
+    BigDecimal sumAllOutstandingRent();
+
+    // TENANT_AGENT: overdue arrears in their portfolio.
     @Query("""
         select coalesce(sum(c.amount - c.paidAmount), 0)
         from TenantRentCharge c
@@ -99,6 +133,18 @@ public interface TenantRentChargeRepository
             @Param("today") LocalDate today
     );
 
+    // ADMIN: overdue arrears across all portfolios.
+    @Query("""
+        select coalesce(sum(c.amount - c.paidAmount), 0)
+        from TenantRentCharge c
+        where c.dueDate < :today
+          and c.paidAmount < c.amount
+        """)
+    BigDecimal sumAllOverdueArrears(
+            @Param("today") LocalDate today
+    );
+
+    // TENANT_AGENT: count overdue charges in their portfolio.
     @Query("""
         select count(c)
         from TenantRentCharge c
@@ -108,6 +154,17 @@ public interface TenantRentChargeRepository
         """)
     long countOverdueCharges(
             @Param("ownerId") Long ownerId,
+            @Param("today") LocalDate today
+    );
+
+    // ADMIN: count overdue charges across all portfolios.
+    @Query("""
+        select count(c)
+        from TenantRentCharge c
+        where c.dueDate < :today
+          and c.paidAmount < c.amount
+        """)
+    long countAllOverdueCharges(
             @Param("today") LocalDate today
     );
 }

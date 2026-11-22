@@ -2,12 +2,13 @@
 package com.example.Credit.management.services;
 
 import com.example.Credit.management.DTO.TenantDashboardResponse;
+import com.example.Credit.management.Model.Role;
 import com.example.Credit.management.Model.TenantLease;
-import com.example.Credit.management.Model.TenantPaymentAllocation;
 import com.example.Credit.management.Model.TenantRentPayment;
 import com.example.Credit.management.Model.TenantResident;
 import com.example.Credit.management.Model.TenantUnit;
 import com.example.Credit.management.Model.User;
+
 import com.example.Credit.management.Repository.TenantLeaseRepository;
 import com.example.Credit.management.Repository.TenantPaymentAllocationRepository;
 import com.example.Credit.management.Repository.TenantPropertyRepository;
@@ -87,20 +88,31 @@ public class TenantDashboardService {
             );
         }
 
-        User owner = userRepository.findByEmail(email.trim())
+        User user = userRepository.findByEmail(email.trim())
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.UNAUTHORIZED,
                         "Authenticated user was not found."
                 ));
 
-        Long ownerId = owner.getId();
-
-        if (ownerId == null) {
+        if (user.getId() == null) {
             throw new ResponseStatusException(
                     HttpStatus.UNAUTHORIZED,
-                    "Authenticated account has no valid owner ID."
+                    "Authenticated account has no valid user ID."
             );
         }
+
+        Role role = user.getRole();
+
+        if (role != Role.TENANT_AGENT && role != Role.ADMIN) {
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "You are not authorized to access the tenant dashboard."
+            );
+        }
+
+        Long ownerId = user.getId();
+
+        boolean admin = role == Role.ADMIN;
 
         // -----------------------------------------------------
         // VALIDATE SELECTED DATE RANGE
@@ -120,125 +132,152 @@ public class TenantDashboardService {
             );
         }
 
-        // The selected end date is inclusive.
-        // Repository queries use an exclusive upper boundary.
-        LocalDate toExclusive = to.plusDays(1);
+        if (to.isAfter(LocalDate.now(KENYA_ZONE))) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "End date cannot be in the future."
+            );
+        }
 
-        // -----------------------------------------------------
-        // CURRENT DATE — AFRICA/NAIROBI
-        // -----------------------------------------------------
+        if (from.isBefore(LocalDate.now(KENYA_ZONE).minusYears(5))) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "The selected date range cannot exceed five years."
+            );
+        }
+
+        LocalDate toExclusive = to.plusDays(1);
 
         LocalDate today = LocalDate.now(KENYA_ZONE);
 
         // -----------------------------------------------------
-        // PROPERTY STATISTICS — CURRENT SNAPSHOT
+        // PROPERTY STATISTICS
         // -----------------------------------------------------
 
-        long totalProperties =
-                propertyRepository.countByOwner_Id(ownerId);
+        long totalProperties = admin
+                ? propertyRepository.count()
+                : propertyRepository.countByOwner_Id(ownerId);
 
         // -----------------------------------------------------
-        // UNIT STATISTICS — CURRENT SNAPSHOT
+        // UNIT STATISTICS
         // -----------------------------------------------------
 
-        long totalUnits =
-                unitRepository.countUnitsForOwner(ownerId);
+        long totalUnits = admin
+                ? unitRepository.countAllUnits()
+                : unitRepository.countUnitsForOwner(ownerId);
 
-        long occupiedUnits =
-                unitRepository.countUnitsForOwnerByStatus(
-                        ownerId,
-                        TenantUnit.UnitStatus.OCCUPIED
-                );
+        long occupiedUnits = admin
+                ? unitRepository.countAllUnitsByStatus(
+                TenantUnit.UnitStatus.OCCUPIED
+        )
+                : unitRepository.countUnitsForOwnerByStatus(
+                ownerId,
+                TenantUnit.UnitStatus.OCCUPIED
+        );
 
-        long vacantUnits =
-                unitRepository.countUnitsForOwnerByStatus(
-                        ownerId,
-                        TenantUnit.UnitStatus.VACANT
-                );
+        long vacantUnits = admin
+                ? unitRepository.countAllUnitsByStatus(
+                TenantUnit.UnitStatus.VACANT
+        )
+                : unitRepository.countUnitsForOwnerByStatus(
+                ownerId,
+                TenantUnit.UnitStatus.VACANT
+        );
 
         // -----------------------------------------------------
-        // TENANT STATISTICS — CURRENT SNAPSHOT
+        // TENANT STATISTICS
         // -----------------------------------------------------
 
-        long activeTenants =
-                residentRepository.countByOwner_IdAndStatus(
-                        ownerId,
-                        TenantResident.TenantStatus.ACTIVE
-                );
+        long activeTenants = admin
+                ? residentRepository.countAllByStatus(
+                TenantResident.TenantStatus.ACTIVE
+        )
+                : residentRepository.countByOwner_IdAndStatus(
+                ownerId,
+                TenantResident.TenantStatus.ACTIVE
+        );
 
-        long activeLeases =
-                leaseRepository.countByOwner_IdAndStatus(
-                        ownerId,
-                        TenantLease.LeaseStatus.ACTIVE
-                );
+        // -----------------------------------------------------
+        // LEASE STATISTICS
+        // -----------------------------------------------------
+
+        long activeLeases = admin
+                ? leaseRepository.countAllByStatus(
+                TenantLease.LeaseStatus.ACTIVE
+        )
+                : leaseRepository.countByOwner_IdAndStatus(
+                ownerId,
+                TenantLease.LeaseStatus.ACTIVE
+        );
 
         // -----------------------------------------------------
         // RENT CHARGED — SELECTED DATE RANGE
-        //
-        // Uses rent charges whose periodStart falls within
-        // the selected date range.
         // -----------------------------------------------------
 
-        BigDecimal rentCharged =
-                safeAmount(
-                        chargeRepository.sumRentChargedForPeriod(
-                                ownerId,
-                                from,
-                                toExclusive
-                        )
-                );
+        BigDecimal rentCharged = safeAmount(
+                admin
+                        ? chargeRepository.sumAllRentChargedForPeriod(
+                        from,
+                        toExclusive
+                )
+                        : chargeRepository.sumRentChargedForPeriod(
+                        ownerId,
+                        from,
+                        toExclusive
+                )
+        );
 
         // -----------------------------------------------------
         // RENT COLLECTED — SELECTED DATE RANGE
-        //
-        // Counts allocations against rent charges belonging
-        // to the selected date range.
-        //
-        // Only POSTED payments are included.
-        //
-        // Advance payments allocated to future rent periods
-        // do not inflate the collection rate for this period.
         // -----------------------------------------------------
 
-        BigDecimal rentCollected =
-                safeAmount(
-                        allocationRepository.sumAllocatedToChargesForPeriod(
-                                ownerId,
-                                TenantRentPayment.PaymentStatus.POSTED,
-                                from,
-                                toExclusive
-                        )
-                );
+        BigDecimal rentCollected = safeAmount(
+                admin
+                        ? allocationRepository.sumAllAllocatedToChargesForPeriod(
+                        TenantRentPayment.PaymentStatus.POSTED,
+                        from,
+                        toExclusive
+                )
+                        : allocationRepository.sumAllocatedToChargesForPeriod(
+                        ownerId,
+                        TenantRentPayment.PaymentStatus.POSTED,
+                        from,
+                        toExclusive
+                )
+        );
 
         // -----------------------------------------------------
         // OUTSTANDING RENT — CURRENT BALANCE
         // -----------------------------------------------------
 
-        BigDecimal outstandingRent =
-                safeAmount(
-                        chargeRepository.sumOutstandingRent(ownerId)
-                );
+        BigDecimal outstandingRent = safeAmount(
+                admin
+                        ? chargeRepository.sumAllOutstandingRent()
+                        : chargeRepository.sumOutstandingRent(ownerId)
+        );
 
         // -----------------------------------------------------
         // OVERDUE ARREARS — CURRENT POSITION
         // -----------------------------------------------------
 
-        BigDecimal overdueArrears =
-                safeAmount(
-                        chargeRepository.sumOverdueArrears(
-                                ownerId,
-                                today
-                        )
-                );
-
-        long overdueCharges =
-                chargeRepository.countOverdueCharges(
+        BigDecimal overdueArrears = safeAmount(
+                admin
+                        ? chargeRepository.sumAllOverdueArrears(today)
+                        : chargeRepository.sumOverdueArrears(
                         ownerId,
                         today
-                );
+                )
+        );
+
+        long overdueCharges = admin
+                ? chargeRepository.countAllOverdueCharges(today)
+                : chargeRepository.countOverdueCharges(
+                ownerId,
+                today
+        );
 
         // -----------------------------------------------------
-        // OCCUPANCY RATE — CURRENT SNAPSHOT
+        // OCCUPANCY RATE
         // -----------------------------------------------------
 
         BigDecimal occupancyRate = percentage(
@@ -247,15 +286,7 @@ public class TenantDashboardService {
         );
 
         // -----------------------------------------------------
-        // COLLECTION RATE — SELECTED DATE RANGE
-        //
-        // Numerator: allocations against rent charges in
-        // the selected period.
-        //
-        // Denominator: rent charged in the selected period.
-        //
-        // The displayed percentage is capped at 100%.
-        // The actual rentCollected amount remains uncapped.
+        // COLLECTION RATE
         // -----------------------------------------------------
 
         BigDecimal collectionRate = percentage(

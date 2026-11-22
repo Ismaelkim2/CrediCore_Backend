@@ -1,10 +1,16 @@
+
 package com.example.Credit.management.services;
+
 import com.example.Credit.management.DTO.*;
-import com.example.Credit.management.Model.ReminderAuditLog;
-import com.example.Credit.management.Model.TenantReminder;
-import com.example.Credit.management.Model.TenantResident;
+import com.example.Credit.management.Model.*;
 import com.example.Credit.management.Repository.ReminderAuditLogRepository;
+import com.example.Credit.management.Repository.TenantLeaseRepository;
+import com.example.Credit.management.Repository.TenantPropertyRepository;
 import com.example.Credit.management.Repository.TenantReminderRepository;
+import com.example.Credit.management.Repository.TenantResidentRepository;
+import com.example.Credit.management.Repository.TenantUnitRepository;
+import com.example.Credit.management.Repository.UserRepository;
+
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -12,6 +18,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
+
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
@@ -25,15 +32,238 @@ public class TenantReminderService {
     private final TenantReminderRepository reminders;
     private final ReminderAuditLogRepository audits;
     private final TenantResidentService tenantResidentService;
+    private final TenantResidentRepository tenantRepository;
+    private final TenantPropertyRepository propertyRepository;
+    private final TenantUnitRepository unitRepository;
+    private final TenantLeaseRepository leaseRepository;
+    private final UserRepository userRepository;
 
     public TenantReminderService(
             TenantReminderRepository reminders,
             ReminderAuditLogRepository audits,
-            TenantResidentService tenantResidentService
+            TenantResidentService tenantResidentService,
+            TenantResidentRepository tenantRepository,
+            TenantPropertyRepository propertyRepository,
+            TenantUnitRepository unitRepository,
+            TenantLeaseRepository leaseRepository,
+            UserRepository userRepository
     ) {
         this.reminders = reminders;
         this.audits = audits;
         this.tenantResidentService = tenantResidentService;
+        this.tenantRepository = tenantRepository;
+        this.propertyRepository = propertyRepository;
+        this.unitRepository = unitRepository;
+        this.leaseRepository = leaseRepository;
+        this.userRepository = userRepository;
+    }
+
+    // =========================================================
+    // AUTHENTICATED ACTOR
+    // =========================================================
+
+    private User requireActor(String actor) {
+
+        if (actor == null || actor.isBlank()) {
+            throw new ResponseStatusException(
+                    HttpStatus.UNAUTHORIZED,
+                    "Authentication required."
+            );
+        }
+
+        return userRepository.findByEmail(actor.trim())
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.UNAUTHORIZED,
+                        "Authenticated user not found."
+                ));
+    }
+
+    private boolean isAdmin(User user) {
+        return user.getRole() == Role.ADMIN;
+    }
+
+    private void requireTenantAgentOrAdmin(User user) {
+
+        if (user.getRole() != Role.TENANT_AGENT
+                && user.getRole() != Role.ADMIN) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "You are not authorized to manage tenant reminders."
+            );
+        }
+    }
+
+    // =========================================================
+    // VALIDATE TENANT
+    // =========================================================
+
+    private TenantResident validateTenant(
+            Long tenantId,
+            User actor
+    ) {
+
+        if (tenantId == null || tenantId <= 0) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "A valid tenant ID is required."
+            );
+        }
+
+        TenantResident tenant;
+
+        if (isAdmin(actor)) {
+
+            tenant = tenantRepository.findById(tenantId)
+                    .orElseThrow(() -> new ResponseStatusException(
+                            HttpStatus.NOT_FOUND,
+                            "Tenant not found."
+                    ));
+
+        } else {
+
+            tenant = tenantRepository.findByIdAndOwner_Id(
+                            tenantId,
+                            actor.getId()
+                    )
+                    .orElseThrow(() -> new ResponseStatusException(
+                            HttpStatus.NOT_FOUND,
+                            "Tenant not found."
+                    ));
+        }
+
+        if (tenant.getStatus() != TenantResident.TenantStatus.ACTIVE) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "The selected tenant is not active."
+            );
+        }
+
+        if (tenant.getOwner() == null
+                || tenant.getOwner().getId() == null
+                || tenant.getOwner().getRole() != Role.TENANT_AGENT) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "The tenant does not belong to a valid tenant agent."
+            );
+        }
+
+        return tenant;
+    }
+
+    // =========================================================
+    // VALIDATE PROPERTY AND UNIT RELATIONSHIPS
+    // =========================================================
+
+    private void validatePropertyAndUnit(
+            Long propertyId,
+            Long unitId,
+            TenantResident tenant,
+            User actor
+    ) {
+
+        if (unitId != null && propertyId == null) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Property ID is required when a unit is selected."
+            );
+        }
+
+        if (propertyId == null) {
+            return;
+        }
+
+        var property = propertyRepository.findById(propertyId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Property not found."
+                ));
+
+        if (property.getOwner() == null
+                || property.getOwner().getId() == null
+                || property.getOwner().getRole() != Role.TENANT_AGENT) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "The property does not belong to a valid tenant agent."
+            );
+        }
+
+        // Agents can only use their own properties.
+        if (!isAdmin(actor)
+                && !property.getOwner().getId().equals(actor.getId())) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "You cannot use another agent's property."
+            );
+        }
+
+        // If a tenant is supplied, the property must belong
+        // to the same agent who owns that tenant.
+        if (tenant != null
+                && !property.getOwner().getId().equals(
+                tenant.getOwner().getId()
+        )) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "The selected tenant and property belong to different agents."
+            );
+        }
+
+        if (unitId == null) {
+
+            if (tenant != null
+                    && !leaseRepository.existsByTenant_IdAndUnit_Property_IdAndOwner_Id(
+                    tenant.getId(),
+                    propertyId,
+                    property.getOwner().getId()
+            )) {
+
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT,
+                        "The selected tenant has no lease associated with this property."
+                );
+            }
+
+            return;
+        }
+
+        var unit = unitRepository.findByIdAndProperty_Id(
+                        unitId,
+                        propertyId
+                )
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "The selected unit does not belong to this property."
+                ));
+
+        if (unit.getProperty() == null
+                || unit.getProperty().getOwner() == null
+                || !unit.getProperty().getOwner().getId().equals(
+                property.getOwner().getId()
+        )) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "The selected unit has an invalid property owner."
+            );
+        }
+
+        if (tenant != null
+                && !leaseRepository.existsByTenant_IdAndUnit_IdAndOwner_Id(
+                tenant.getId(),
+                unitId,
+                property.getOwner().getId()
+        )) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "The selected tenant has no lease associated with this unit."
+            );
+        }
     }
 
     // =========================================================
@@ -46,41 +276,36 @@ public class TenantReminderService {
             String actor
     ) {
 
-        requireActor(actor);
+        User currentUser = requireActor(actor);
+        requireTenantAgentOrAdmin(currentUser);
 
-        if (request == null) {
+        if (request == null || request.type() == null) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
-                    "Reminder request cannot be empty."
+                    "Reminder details and reminder type are required."
             );
         }
 
-        if (request.type() == null) {
+        boolean calendar =
+                request.type() == TenantReminder.ReminderType.CALENDAR;
+
+        TenantResident tenant = null;
+
+        if (request.tenantId() != null) {
+            tenant = validateTenant(request.tenantId(), currentUser);
+        } else if (!calendar) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
-                    "Reminder type is required."
+                    "Tenant ID is required for tenant reminders."
             );
         }
 
-        // Calendar events may be created without a tenant.
-        // All other reminder types require an active owned tenant.
-        if (request.type() == TenantReminder.ReminderType.CALENDAR) {
-
-            if (request.tenantId() != null) {
-                validateTenantOwnership(request.tenantId(), actor);
-            }
-
-        } else {
-
-            if (request.tenantId() == null) {
-                throw new ResponseStatusException(
-                        HttpStatus.BAD_REQUEST,
-                        "Tenant ID is required for tenant reminders."
-                );
-            }
-
-            validateTenantOwnership(request.tenantId(), actor);
-        }
+        validatePropertyAndUnit(
+                request.propertyId(),
+                request.unitId(),
+                tenant,
+                currentUser
+        );
 
         String title = clean(request.title());
         String message = clean(request.message());
@@ -116,26 +341,21 @@ public class TenantReminderService {
         reminder.setMessage(message);
         reminder.setType(request.type());
 
-        // Calendar events must remain internal IN_APP events.
-        if (request.type() == TenantReminder.ReminderType.CALENDAR) {
-
-            reminder.setChannel(
-                    TenantReminder.ReminderChannel.IN_APP
-            );
-
-        } else {
-
-            reminder.setChannel(
-                    request.channel() != null
-                            ? request.channel()
-                            : TenantReminder.ReminderChannel.IN_APP
-            );
-        }
+        reminder.setChannel(
+                calendar
+                        ? TenantReminder.ReminderChannel.IN_APP
+                        : request.channel() != null
+                        ? request.channel()
+                        : TenantReminder.ReminderChannel.IN_APP
+        );
 
         reminder.setDueDate(request.dueDate());
         reminder.setAmount(request.amount());
         reminder.setScheduledAt(request.scheduledAt());
-        reminder.setCreatedBy(actor);
+
+        // Always use the authenticated user, never a request-supplied creator.
+        reminder.setCreatedBy(currentUser.getEmail());
+
         reminder.setIdempotencyKey(idempotencyKey);
 
         reminder.setStatus(
@@ -149,8 +369,8 @@ public class TenantReminderService {
         audit(
                 saved,
                 "CREATED",
-                actor,
-                request.type() == TenantReminder.ReminderType.CALENDAR
+                currentUser.getEmail(),
+                calendar
                         ? "Calendar event created."
                         : "Reminder created."
         );
@@ -159,7 +379,7 @@ public class TenantReminderService {
     }
 
     // =========================================================
-    // LIST REMINDERS CREATED BY THE CURRENT ACTOR
+    // LIST REMINDERS
     // =========================================================
 
     @Transactional(readOnly = true)
@@ -169,23 +389,26 @@ public class TenantReminderService {
             int size
     ) {
 
-        requireActor(actor);
+        User currentUser = requireActor(actor);
+        requireTenantAgentOrAdmin(currentUser);
 
         int safePage = Math.max(page, 0);
         int safeSize = Math.min(Math.max(size, 1), 100);
 
-        return reminders.findByCreatedByOrderByCreatedAtDesc(
-                        actor,
-                        PageRequest.of(
-                                safePage,
-                                safeSize,
-                                Sort.by(
-                                        Sort.Direction.DESC,
-                                        "createdAt"
-                                )
-                        )
-                )
-                .map(this::toResponse);
+        PageRequest pageable = PageRequest.of(
+                safePage,
+                safeSize,
+                Sort.by(Sort.Direction.DESC, "createdAt")
+        );
+
+        Page<TenantReminder> results = isAdmin(currentUser)
+                ? reminders.findAllByOrderByCreatedAtDesc(pageable)
+                : reminders.findByCreatedByOrderByCreatedAtDesc(
+                currentUser.getEmail(),
+                pageable
+        );
+
+        return results.map(this::toResponse);
     }
 
     // =========================================================
@@ -198,11 +421,10 @@ public class TenantReminderService {
             String actor
     ) {
 
-        requireActor(actor);
+        User currentUser = requireActor(actor);
+        requireTenantAgentOrAdmin(currentUser);
 
-        return toResponse(
-                ownedReminder(id, actor)
-        );
+        return toResponse(ownedReminder(id, currentUser));
     }
 
     // =========================================================
@@ -215,9 +437,10 @@ public class TenantReminderService {
             String actor
     ) {
 
-        requireActor(actor);
+        User currentUser = requireActor(actor);
+        requireTenantAgentOrAdmin(currentUser);
 
-        TenantReminder reminder = ownedReminder(id, actor);
+        TenantReminder reminder = ownedReminder(id, currentUser);
 
         if (reminder.getStatus() == TenantReminder.ReminderStatus.SENT
                 || reminder.getStatus() == TenantReminder.ReminderStatus.DELIVERED) {
@@ -232,10 +455,7 @@ public class TenantReminderService {
             return toResponse(reminder);
         }
 
-        reminder.setStatus(
-                TenantReminder.ReminderStatus.CANCELLED
-        );
-
+        reminder.setStatus(TenantReminder.ReminderStatus.CANCELLED);
         reminder.setCancelledAt(LocalDateTime.now());
 
         TenantReminder saved = reminders.save(reminder);
@@ -243,7 +463,7 @@ public class TenantReminderService {
         audit(
                 saved,
                 "CANCELLED",
-                actor,
+                currentUser.getEmail(),
                 "Reminder cancelled."
         );
 
@@ -260,9 +480,10 @@ public class TenantReminderService {
             String actor
     ) {
 
-        requireActor(actor);
+        User currentUser = requireActor(actor);
+        requireTenantAgentOrAdmin(currentUser);
 
-        TenantReminder reminder = ownedReminder(id, actor);
+        TenantReminder reminder = ownedReminder(id, currentUser);
 
         if (reminder.getStatus() == TenantReminder.ReminderStatus.CANCELLED) {
             throw new ResponseStatusException(
@@ -271,10 +492,7 @@ public class TenantReminderService {
             );
         }
 
-        reminder.setStatus(
-                TenantReminder.ReminderStatus.FOLLOWED_UP
-        );
-
+        reminder.setStatus(TenantReminder.ReminderStatus.FOLLOWED_UP);
         reminder.setFollowedUpAt(LocalDateTime.now());
 
         TenantReminder saved = reminders.save(reminder);
@@ -282,7 +500,7 @@ public class TenantReminderService {
         audit(
                 saved,
                 "FOLLOWED_UP",
-                actor,
+                currentUser.getEmail(),
                 "Follow-up recorded by user."
         );
 
@@ -290,7 +508,7 @@ public class TenantReminderService {
     }
 
     // =========================================================
-    // REQUEST RETRY FOR A FAILED REMINDER
+    // RETRY FAILED REMINDER
     // =========================================================
 
     @Transactional
@@ -299,9 +517,10 @@ public class TenantReminderService {
             String actor
     ) {
 
-        requireActor(actor);
+        User currentUser = requireActor(actor);
+        requireTenantAgentOrAdmin(currentUser);
 
-        TenantReminder reminder = ownedReminder(id, actor);
+        TenantReminder reminder = ownedReminder(id, currentUser);
 
         if (reminder.getType() == TenantReminder.ReminderType.CALENDAR) {
             throw new ResponseStatusException(
@@ -317,10 +536,7 @@ public class TenantReminderService {
             );
         }
 
-        reminder.setStatus(
-                TenantReminder.ReminderStatus.PENDING
-        );
-
+        reminder.setStatus(TenantReminder.ReminderStatus.PENDING);
         reminder.setNextAttemptAt(null);
         reminder.setLastError(null);
 
@@ -329,7 +545,7 @@ public class TenantReminderService {
         audit(
                 saved,
                 "RETRY_REQUESTED",
-                actor,
+                currentUser.getEmail(),
                 "Reminder queued for retry."
         );
 
@@ -337,7 +553,7 @@ public class TenantReminderService {
     }
 
     // =========================================================
-    // LOAD CALENDAR EVENTS
+    // CALENDAR EVENTS
     // =========================================================
 
     @Transactional(readOnly = true)
@@ -347,29 +563,25 @@ public class TenantReminderService {
             LocalDate to
     ) {
 
-        requireActor(actor);
+        User currentUser = requireActor(actor);
+        requireTenantAgentOrAdmin(currentUser);
 
-        if (from == null || to == null || from.isAfter(to)) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "A valid calendar date range is required."
-            );
-        }
+        validateCalendarRange(from, to);
 
-        if (ChronoUnit.DAYS.between(from, to) > 62) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "Calendar date range cannot exceed 63 days."
-            );
-        }
+        List<TenantReminder> events = isAdmin(currentUser)
+                ? reminders.findByTypeAndDueDateBetweenOrderByDueDateAscScheduledAtAsc(
+                TenantReminder.ReminderType.CALENDAR,
+                from,
+                to
+        )
+                : reminders.findByCreatedByAndDueDateBetweenOrderByDueDateAscScheduledAtAsc(
+                currentUser.getEmail(),
+                from,
+                to
+        );
 
-        return reminders
-                .findByCreatedByAndDueDateBetweenOrderByDueDateAscScheduledAtAsc(
-                        actor,
-                        from,
-                        to
-                )
-                .stream()
+        return events.stream()
+                .filter(event -> event.getType() == TenantReminder.ReminderType.CALENDAR)
                 .map(this::toResponse)
                 .toList();
     }
@@ -385,23 +597,19 @@ public class TenantReminderService {
             String actor
     ) {
 
-        requireActor(actor);
+        User currentUser = requireActor(actor);
+        requireTenantAgentOrAdmin(currentUser);
 
-        if (request == null) {
+        if (request == null
+                || request.type() != TenantReminder.ReminderType.CALENDAR) {
+
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
-                    "Calendar event details are required."
+                    "Valid calendar event details are required."
             );
         }
 
-        if (request.type() != TenantReminder.ReminderType.CALENDAR) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "The event type must be CALENDAR."
-            );
-        }
-
-        TenantReminder reminder = ownedReminder(id, actor);
+        TenantReminder reminder = ownedReminder(id, currentUser);
 
         if (reminder.getType() != TenantReminder.ReminderType.CALENDAR) {
             throw new ResponseStatusException(
@@ -417,6 +625,17 @@ public class TenantReminderService {
             );
         }
 
+        TenantResident tenant = request.tenantId() == null
+                ? null
+                : validateTenant(request.tenantId(), currentUser);
+
+        validatePropertyAndUnit(
+                request.propertyId(),
+                request.unitId(),
+                tenant,
+                currentUser
+        );
+
         String title = clean(request.title());
         String message = clean(request.message());
 
@@ -431,10 +650,6 @@ public class TenantReminderService {
 
         validateAmount(request.amount());
 
-        if (request.tenantId() != null) {
-            validateTenantOwnership(request.tenantId(), actor);
-        }
-
         reminder.setTenantId(request.tenantId());
         reminder.setPropertyId(request.propertyId());
         reminder.setUnitId(request.unitId());
@@ -442,19 +657,13 @@ public class TenantReminderService {
         reminder.setTitle(title);
         reminder.setMessage(message);
         reminder.setType(TenantReminder.ReminderType.CALENDAR);
-
-        // Calendar events are always internal.
-        reminder.setChannel(
-                TenantReminder.ReminderChannel.IN_APP
-        );
+        reminder.setChannel(TenantReminder.ReminderChannel.IN_APP);
 
         reminder.setDueDate(request.dueDate());
         reminder.setAmount(request.amount());
         reminder.setScheduledAt(request.scheduledAt());
 
-        // Preserve an existing completed follow-up.
         if (reminder.getStatus() != TenantReminder.ReminderStatus.FOLLOWED_UP) {
-
             reminder.setStatus(
                     request.scheduledAt() != null
                             ? TenantReminder.ReminderStatus.SCHEDULED
@@ -470,7 +679,7 @@ public class TenantReminderService {
         audit(
                 saved,
                 "CALENDAR_EVENT_UPDATED",
-                actor,
+                currentUser.getEmail(),
                 "Calendar event updated."
         );
 
@@ -478,12 +687,14 @@ public class TenantReminderService {
     }
 
     // =========================================================
-    // FIND A REMINDER OWNED BY THE CURRENT ACTOR
+    // FIND REMINDER
+    // AGENT: OWN REMINDERS
+    // ADMIN: ALL REMINDERS
     // =========================================================
 
     private TenantReminder ownedReminder(
             Long id,
-            String actor
+            User actor
     ) {
 
         if (id == null || id <= 0) {
@@ -493,7 +704,18 @@ public class TenantReminderService {
             );
         }
 
-        return reminders.findByIdAndCreatedBy(id, actor)
+        if (isAdmin(actor)) {
+            return reminders.findById(id)
+                    .orElseThrow(() -> new ResponseStatusException(
+                            HttpStatus.NOT_FOUND,
+                            "Reminder not found."
+                    ));
+        }
+
+        return reminders.findByIdAndCreatedBy(
+                        id,
+                        actor.getEmail()
+                )
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.NOT_FOUND,
                         "Reminder not found."
@@ -522,42 +744,6 @@ public class TenantReminderService {
     }
 
     // =========================================================
-    // VALIDATE ACTOR
-    // =========================================================
-
-    private void requireActor(String actor) {
-
-        if (actor == null || actor.isBlank()) {
-            throw new ResponseStatusException(
-                    HttpStatus.UNAUTHORIZED,
-                    "Authentication required."
-            );
-        }
-    }
-
-    // =========================================================
-    // VALIDATE TENANT OWNERSHIP
-    // =========================================================
-
-    private void validateTenantOwnership(
-            Long tenantId,
-            String actor
-    ) {
-
-        if (tenantId == null || tenantId <= 0) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "A valid tenant ID is required."
-            );
-        }
-
-        tenantResidentService.validateActiveOwnedTenantIds(
-                List.of(tenantId),
-                actor
-        );
-    }
-
-    // =========================================================
     // VALIDATE TITLE AND MESSAGE
     // =========================================================
 
@@ -566,14 +752,14 @@ public class TenantReminderService {
             String message
     ) {
 
-        if (title == null || title.length() > 160) {
+        if (title == null || title.isBlank() || title.length() > 160) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
                     "A title between 1 and 160 characters is required."
             );
         }
 
-        if (message == null || message.length() > 2000) {
+        if (message == null || message.isBlank() || message.length() > 2000) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
                     "A message between 1 and 2000 characters is required."
@@ -596,11 +782,34 @@ public class TenantReminderService {
     }
 
     // =========================================================
+    // VALIDATE CALENDAR RANGE
+    // =========================================================
+
+    private void validateCalendarRange(
+            LocalDate from,
+            LocalDate to
+    ) {
+
+        if (from == null || to == null || from.isAfter(to)) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "A valid calendar date range is required."
+            );
+        }
+
+        if (ChronoUnit.DAYS.between(from, to) > 62) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Calendar date range cannot exceed 63 days."
+            );
+        }
+    }
+
+    // =========================================================
     // NORMALIZE OPTIONAL STRINGS
     // =========================================================
 
     private String clean(String value) {
-
         return value == null || value.isBlank()
                 ? null
                 : value.trim();
@@ -616,7 +825,8 @@ public class TenantReminderService {
             String actor
     ) {
 
-        requireActor(actor);
+        User currentUser = requireActor(actor);
+        requireTenantAgentOrAdmin(currentUser);
 
         if (request == null || request.reminder() == null) {
             throw new ResponseStatusException(
@@ -632,25 +842,37 @@ public class TenantReminderService {
             );
         }
 
-        if (request.reminder().type() == TenantReminder.ReminderType.CALENDAR) {
+        if (request.tenantIds().size() > 500) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "A maximum of 500 tenants can be selected."
+            );
+        }
+
+        if (request.reminder().type() == null
+                || request.reminder().type() == TenantReminder.ReminderType.CALENDAR) {
+
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
                     "Calendar events cannot be sent as bulk tenant reminders."
             );
         }
 
-        // Validate every recipient before saving any reminders.
-        List<Long> tenantIds =
-                tenantResidentService.validateActiveOwnedTenantIds(
-                        request.tenantIds(),
-                        actor
-                );
+        List<Long> tenantIds = request.tenantIds().stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
 
-        if (tenantIds == null || tenantIds.isEmpty()) {
+        if (tenantIds.isEmpty()) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
-                    "No eligible tenants were found."
+                    "No valid tenant IDs were supplied."
             );
+        }
+
+        // Validate every recipient before saving any reminder.
+        for (Long tenantId : tenantIds) {
+            validateTenant(tenantId, currentUser);
         }
 
         CreateTenantReminderRequest original = request.reminder();
@@ -661,9 +883,7 @@ public class TenantReminderService {
 
             String key = clean(original.idempotencyKey());
 
-            // Ensure every reminder has a unique idempotency key.
             if (key != null) {
-
                 String suffix = "-" + tenantId;
                 int maxBaseLength = 200 - suffix.length();
 
@@ -689,7 +909,7 @@ public class TenantReminderService {
                             key
                     );
 
-            results.add(create(recipientRequest, actor));
+            results.add(create(recipientRequest, currentUser.getEmail()));
         }
 
         return results;
@@ -704,22 +924,30 @@ public class TenantReminderService {
             String actor
     ) {
 
-        requireActor(actor);
+        User currentUser = requireActor(actor);
+        requireTenantAgentOrAdmin(currentUser);
 
-        long count = tenantResidentService.getAll(actor)
-                .stream()
-                .filter(tenant ->
-                        tenant.status() == TenantResident.TenantStatus.ACTIVE
-                )
-                .count();
+        long count;
 
-        return new EligibleTenantCountResponse(
-                Math.toIntExact(count)
-        );
+        if (isAdmin(currentUser)) {
+            count = tenantRepository.findAll()
+                    .stream()
+                    .filter(t -> t.getStatus() == TenantResident.TenantStatus.ACTIVE)
+                    .filter(t -> t.getOwner() != null
+                            && t.getOwner().getRole() == Role.TENANT_AGENT)
+                    .count();
+        } else {
+            count = tenantRepository.countByOwner_IdAndStatus(
+                    currentUser.getId(),
+                    TenantResident.TenantStatus.ACTIVE
+            );
+        }
+
+        return new EligibleTenantCountResponse(Math.toIntExact(count));
     }
 
     // =========================================================
-    // CREATE REMINDERS FOR ALL ACTIVE TENANTS
+    // CREATE REMINDERS FOR ALL ELIGIBLE TENANTS
     // =========================================================
 
     @Transactional
@@ -728,7 +956,8 @@ public class TenantReminderService {
             String actor
     ) {
 
-        requireActor(actor);
+        User currentUser = requireActor(actor);
+        requireTenantAgentOrAdmin(currentUser);
 
         if (request == null || request.reminder() == null) {
             throw new ResponseStatusException(
@@ -737,21 +966,37 @@ public class TenantReminderService {
             );
         }
 
-        var details = request.reminder();
+        CreateTenantReminderRequest details = request.reminder();
 
-        if (details.type() == TenantReminder.ReminderType.CALENDAR) {
+        if (details.type() == null
+                || details.type() == TenantReminder.ReminderType.CALENDAR) {
+
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
                     "Calendar events cannot be sent to all tenants."
             );
         }
 
-        List<Long> tenantIds = tenantResidentService.getAll(actor)
-                .stream()
-                .filter(tenant ->
-                        tenant.status() == TenantResident.TenantStatus.ACTIVE
-                )
-                .map(tenant -> tenant.id())
+        List<TenantResident> eligibleTenants;
+
+        if (isAdmin(currentUser)) {
+            eligibleTenants = tenantRepository.findAll()
+                    .stream()
+                    .filter(t -> t.getStatus() == TenantResident.TenantStatus.ACTIVE)
+                    .filter(t -> t.getOwner() != null
+                            && t.getOwner().getRole() == Role.TENANT_AGENT)
+                    .toList();
+        } else {
+            eligibleTenants = tenantRepository.findByOwner_IdOrderByCreatedAtDesc(
+                            currentUser.getId()
+                    )
+                    .stream()
+                    .filter(t -> t.getStatus() == TenantResident.TenantStatus.ACTIVE)
+                    .toList();
+        }
+
+        List<Long> tenantIds = eligibleTenants.stream()
+                .map(TenantResident::getId)
                 .filter(Objects::nonNull)
                 .distinct()
                 .toList();
@@ -779,13 +1024,10 @@ public class TenantReminderService {
                 );
 
         BulkTenantReminderRequest bulkRequest =
-                new BulkTenantReminderRequest(
-                        tenantIds,
-                        reminder
-                );
+                new BulkTenantReminderRequest(tenantIds, reminder);
 
         List<TenantReminderResponse> created =
-                createBulk(bulkRequest, actor);
+                createBulk(bulkRequest, currentUser.getEmail());
 
         return new BulkReminderResultResponse(created.size());
     }
@@ -807,24 +1049,24 @@ public class TenantReminderService {
 
         TenantResidentResponse tenant = null;
 
-        // Calendar events can exist without an associated tenant.
         if (reminder.getTenantId() != null) {
 
-            tenant = tenantResidentService.getAll(
-                            reminder.getCreatedBy()
-                    )
-                    .stream()
-                    .filter(t -> Objects.equals(
-                            t.id(),
+            TenantResident resident = tenantRepository.findById(
                             reminder.getTenantId()
-                    ))
-                    .findFirst()
+                    )
                     .orElse(null);
+
+            if (resident != null && resident.getOwner() != null) {
+
+                // Use the actual tenant owner, not the reminder creator.
+                // This also supports administrator-created reminders.
+                tenant = tenantResidentService.getById(
+                        resident.getId(),
+                        resident.getOwner().getEmail()
+                );
+            }
         }
 
-        return TenantReminderResponse.from(
-                reminder,
-                tenant
-        );
+        return TenantReminderResponse.from(reminder, tenant);
     }
 }

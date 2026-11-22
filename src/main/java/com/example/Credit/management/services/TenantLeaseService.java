@@ -3,11 +3,7 @@ package com.example.Credit.management.services;
 
 import com.example.Credit.management.DTO.TenantLeaseRequest;
 import com.example.Credit.management.DTO.TenantLeaseResponse;
-import com.example.Credit.management.Model.TenantLease;
-import com.example.Credit.management.Model.TenantProperty;
-import com.example.Credit.management.Model.TenantResident;
-import com.example.Credit.management.Model.TenantUnit;
-import com.example.Credit.management.Model.User;
+import com.example.Credit.management.Model.*;
 import com.example.Credit.management.Repository.TenantLeaseRepository;
 import com.example.Credit.management.Repository.TenantPropertyRepository;
 import com.example.Credit.management.Repository.TenantResidentRepository;
@@ -174,6 +170,19 @@ public class TenantLeaseService {
         TenantUnit unit = unitRepository
                 .findUnitForLeaseUpdate(lease.getUnit().getId())
                 .orElseThrow(() -> notFound("Unit not found."));
+        // Confirm that the locked unit still belongs to this agent.
+        propertyRepository.findByIdAndOwner_Id(
+                unit.getProperty().getId(),
+                owner.getId()
+        ).orElseThrow(() ->
+                notFound("Unit not found in your portfolio."));
+
+// Confirm that the lease tenant still belongs to this agent.
+        tenantRepository.findByIdAndOwner_Id(
+                lease.getTenant().getId(),
+                owner.getId()
+        ).orElseThrow(() ->
+                notFound("Tenant not found in your portfolio."));
 
         if (unit.getStatus() != TenantUnit.UnitStatus.VACANT) {
             throw conflict("This unit is no longer vacant.");
@@ -199,17 +208,10 @@ public class TenantLeaseService {
             throw conflict("This unit already has an active lease.");
         }
 
-        /*
-         * Generate rent charges immediately after successful activation.
-         *
-         * This runs in the same transaction.
-         * Existing charges are protected by the lease-period
-         * duplicate check in TenantRentService.
-         *
-         * Available advance payments are also applied to
-         * newly generated rent charges.
-         */
-        rentService.generateRentCharges();
+        rentService.generateRentChargesForLease(
+                lease.getId(),
+                authenticatedEmail
+        );
 
         return toResponse(lease);
     }
@@ -221,6 +223,12 @@ public class TenantLeaseService {
         User owner = getOwner(authenticatedEmail);
         TenantLease lease = findOwnedLease(leaseId, owner.getId());
 
+        tenantRepository.findByIdAndOwner_Id(
+                lease.getTenant().getId(),
+                owner.getId()
+        ).orElseThrow(() ->
+                notFound("Tenant not found in your portfolio."));
+
         if (lease.getStatus() != TenantLease.LeaseStatus.ACTIVE) {
             throw conflict("Only active leases can be terminated.");
         }
@@ -228,6 +236,13 @@ public class TenantLeaseService {
         TenantUnit unit = unitRepository
                 .findUnitForLeaseUpdate(lease.getUnit().getId())
                 .orElseThrow(() -> notFound("Unit not found."));
+
+        // Confirm ownership before changing the lease or unit.
+        propertyRepository.findByIdAndOwner_Id(
+                unit.getProperty().getId(),
+                owner.getId()
+        ).orElseThrow(() ->
+                notFound("Unit not found in your portfolio."));
 
         lease.setStatus(TenantLease.LeaseStatus.TERMINATED);
         lease.setActiveUnitId(null);
@@ -315,10 +330,19 @@ public class TenantLeaseService {
                     "Authenticated user could not be identified.");
         }
 
-        return userRepository.findByEmail(email.trim())
+        User user = userRepository.findByEmail(email.trim())
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.UNAUTHORIZED,
                         "Authenticated user was not found."));
+
+        if (user.getRole() != Role.TENANT_AGENT
+                && user.getRole() != Role.ADMIN) {
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "You are not authorized to manage rental leases.");
+        }
+
+        return user;
     }
 
     private TenantLease findOwnedLease(Long leaseId, Long ownerId) {

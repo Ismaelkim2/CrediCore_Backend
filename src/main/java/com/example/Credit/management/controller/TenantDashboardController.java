@@ -5,12 +5,14 @@ import com.example.Credit.management.DTO.TenantDashboardResponse;
 import com.example.Credit.management.services.TenantDashboardService;
 
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
-import java.security.Principal;
 import java.time.LocalDate;
 
 @RestController
@@ -20,13 +22,14 @@ public class TenantDashboardController {
     private final TenantDashboardService dashboardService;
 
     public TenantDashboardController(
-            TenantDashboardService dashboardService) {
+            TenantDashboardService dashboardService
+    ) {
         this.dashboardService = dashboardService;
     }
 
     @GetMapping
     public TenantDashboardResponse getDashboard(
-            Principal principal,
+            Authentication authentication,
 
             @RequestParam("from")
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
@@ -34,10 +37,43 @@ public class TenantDashboardController {
 
             @RequestParam("to")
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
-            LocalDate to) {
+            LocalDate to
+    ) {
+
+        if (authentication == null
+                || !authentication.isAuthenticated()
+                || authentication.getName() == null
+                || authentication.getName().isBlank()) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.UNAUTHORIZED,
+                    "Authentication is required."
+            );
+        }
+
+        if (from == null || to == null || from.isAfter(to)) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Invalid dashboard reporting date range."
+            );
+        }
+
+        if (from.isBefore(LocalDate.now().minusYears(5))) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Dashboard reporting range cannot exceed five years."
+            );
+        }
+
+        if (to.isAfter(LocalDate.now())) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "The reporting end date cannot be in the future."
+            );
+        }
 
         return dashboardService.getDashboard(
-                principal.getName(),
+                authentication.getName().trim(),
                 from,
                 to
         );

@@ -1,13 +1,15 @@
+
 package com.example.Credit.management.SecConfig;
 
+import com.example.Credit.management.Model.AccountStatus;
 import com.example.Credit.management.Model.User;
 import com.example.Credit.management.Repository.UserRepository;
+
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -20,9 +22,6 @@ import java.util.List;
 
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
-
-    private static final Logger logger =
-            LoggerFactory.getLogger(JwtAuthenticationFilter.class);
 
     @Autowired
     private JwtUtil jwtUtil;
@@ -39,14 +38,17 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         String requestPath = request.getServletPath();
 
-        // ==========================
-        // SKIP JWT FOR PUBLIC FILES
-        // ==========================
+        // PUBLIC ENDPOINTS
+        // These must work without an existing login session.
         if (
                 requestPath.startsWith("/api/auth/login") ||
                         requestPath.startsWith("/api/auth/register") ||
                         requestPath.startsWith("/api/auth/send-otp") ||
                         requestPath.startsWith("/api/auth/verify-otp") ||
+                        requestPath.startsWith("/api/auth/invitations/validate") ||
+                        requestPath.startsWith("/api/auth/invitations/complete") ||
+                        requestPath.startsWith("/api/auth/forgot-password") ||
+                        requestPath.startsWith("/api/auth/verify-account") ||
                         requestPath.startsWith("/uploads/") ||
                         requestPath.startsWith("/api/accounts/image/")
         ) {
@@ -54,7 +56,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
 
-        logger.debug("🔐 Checking JWT for request: {}", request.getRequestURI());
+        SecurityContextHolder.clearContext();
 
         String authHeader = request.getHeader("Authorization");
 
@@ -68,24 +70,38 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
                     String email = jwtUtil.getEmailFromToken(jwt);
 
-                    logger.debug("✅ JWT validated successfully for email: {}", email);
-
                     User user = userRepository
                             .findByEmail(email)
                             .orElse(null);
 
-                    if (user != null) {
+                    /*
+                     * Authentication requirements:
+                     *
+                     * 1. User must exist.
+                     * 2. User must have an assigned role.
+                     * 3. User must be approved.
+                     * 4. User must have completed registration.
+                     *
+                     * Explicit FALSE blocks incomplete staff.
+                     * NULL remains temporarily compatible with
+                     * legacy accounts until database backfill.
+                     */
+
+                    if (
+                            user != null &&
+                                    user.getRole() != null &&
+                                    user.getStatus() == AccountStatus.APPROVED &&
+                                    !Boolean.FALSE.equals(
+                                            user.getRegistrationCompleted()
+                                    )
+                    ) {
 
                         String roleName = user.getRole().name();
 
                         SimpleGrantedAuthority authority =
-                                new SimpleGrantedAuthority("ROLE_" + roleName);
-
-                        logger.info(
-                                "👤 Authenticated User: {} with Role: {}",
-                                email,
-                                authority.getAuthority()
-                        );
+                                new SimpleGrantedAuthority(
+                                        "ROLE_" + roleName
+                                );
 
                         UsernamePasswordAuthenticationToken authentication =
                                 new UsernamePasswordAuthenticationToken(
@@ -97,37 +113,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                         SecurityContextHolder
                                 .getContext()
                                 .setAuthentication(authentication);
-
-                    } else {
-
-                        logger.warn(
-                                "⚠️ User not found for email: {}",
-                                email
-                        );
                     }
-
-                } else {
-
-                    logger.warn(
-                            "🚫 Invalid JWT token for request: {}",
-                            request.getRequestURI()
-                    );
                 }
 
             } catch (Exception ex) {
 
-                logger.error(
-                        "❌ Error validating JWT token",
-                        ex
-                );
+                SecurityContextHolder.clearContext();
+
+                // Never log JWT contents or credentials.
             }
-
-        } else {
-
-            logger.debug(
-                    "ℹ️ No JWT token found in header for: {}",
-                    request.getRequestURI()
-            );
         }
 
         filterChain.doFilter(request, response);

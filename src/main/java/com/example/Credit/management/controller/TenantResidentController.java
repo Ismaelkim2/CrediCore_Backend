@@ -164,7 +164,6 @@ public class TenantResidentController {
     // =========================================================
     // UPDATE TENANT - REPLACE IMAGE
     // =========================================================
-
     @PutMapping(
             value = "/{tenantId}",
             consumes = MediaType.MULTIPART_FORM_DATA_VALUE

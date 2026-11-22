@@ -3,6 +3,7 @@ package com.example.Credit.management.Repository;
 
 import com.example.Credit.management.Model.TenantPaymentAllocation;
 import com.example.Credit.management.Model.TenantRentPayment;
+
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -23,12 +24,24 @@ public interface TenantPaymentAllocationRepository
             Collection<Long> paymentIds
     );
 
-    /**
-     * Total posted payment allocations applied to rent charges
-     * whose period starts within the specified period.
-     *
-     * This is the correct basis for the dashboard's rent
-     * collection figure for a particular rent period.
+    // TENANT_AGENT: allocations belonging to their own lease.
+    List<TenantPaymentAllocation>
+    findByPayment_Owner_IdAndPayment_Lease_IdOrderByIdAsc(
+            Long ownerId,
+            Long leaseId
+    );
+
+    // TENANT_AGENT: allocations belonging to their own payment.
+    List<TenantPaymentAllocation>
+    findByPayment_IdAndPayment_Owner_IdOrderByIdAsc(
+            Long paymentId,
+            Long ownerId
+    );
+
+    /*
+     * TENANT_AGENT:
+     * Total posted allocations applied to rent charges
+     * whose period starts within the selected period.
      */
     @Query("""
         select coalesce(sum(a.amount), 0)
@@ -49,9 +62,30 @@ public interface TenantPaymentAllocationRepository
             @Param("periodEnd") LocalDate periodEnd
     );
 
-    /**
-     * Total posted payment allocations applied to future
-     * rent charges, starting from the next rent period.
+    /*
+     * ADMIN:
+     * Total posted allocations across all agent portfolios
+     * applied to rent charges within the selected period.
+     */
+    @Query("""
+        select coalesce(sum(a.amount), 0)
+        from TenantPaymentAllocation a
+        join a.payment p
+        join a.charge c
+        where p.status = :paymentStatus
+          and c.periodStart >= :periodStart
+          and c.periodStart < :periodEnd
+        """)
+    BigDecimal sumAllAllocatedToChargesForPeriod(
+            @Param("paymentStatus")
+            TenantRentPayment.PaymentStatus paymentStatus,
+            @Param("periodStart") LocalDate periodStart,
+            @Param("periodEnd") LocalDate periodEnd
+    );
+
+    /*
+     * TENANT_AGENT:
+     * Posted allocations applied to future rent charges.
      */
     @Query("""
         select coalesce(sum(a.amount), 0)

@@ -1,3 +1,4 @@
+
 package com.example.Credit.management.services;
 
 import com.example.Credit.management.Model.*;
@@ -14,6 +15,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -30,7 +32,7 @@ public class AuthService {
     @Autowired(required = false)
     private SendGridEmailService sendGridEmailService;
 
-    // Twilio config
+    // Twilio configuration
     @Value("${twilio.account.sid:}")
     private String twilioAccountSid;
 
@@ -40,13 +42,17 @@ public class AuthService {
     @Value("${twilio.phone.number:}")
     private String twilioPhoneNumber;
 
+    // Temporary OTP storage
+    private static final Map<String, OtpData> otpStore =
+            new ConcurrentHashMap<>();
 
-    // Temporary OTP store in memory
-    private static final Map<String, OtpData> otpStore = new ConcurrentHashMap<>();
+    private static final SecureRandom SECURE_RANDOM =
+            new SecureRandom();
 
     private static class OtpData {
-        String otp;
-        LocalDateTime expiryTime;
+
+        private final String otp;
+        private final LocalDateTime expiryTime;
 
         OtpData(String otp, LocalDateTime expiryTime) {
             this.otp = otp;
@@ -54,39 +60,132 @@ public class AuthService {
         }
     }
 
-    /** Register user */
-    public Map<String, Object> register(RegisterRequest request) {
-        Account account = accountRepository.findByNationalId(request.getNationalId())
-                .orElseThrow(() -> new RuntimeException("No account found with given National ID"));
+    // =========================================================
+    // PUBLIC APPLICANT REGISTRATION
+    // =========================================================
 
-        if (userRepository.existsByNationalId(request.getNationalId())) {
-            throw new RuntimeException("User already registered with this National ID");
+    public Map<String, Object> register(RegisterRequest request) {
+
+        if (request == null) {
+            throw new IllegalArgumentException(
+                    "Registration details are required."
+            );
         }
 
-        Role userRole = request.getRole() != null ? request.getRole() : Role.APPLICANT;
+        String name = request.getName() == null
+                ? ""
+                : request.getName().trim();
+
+        String email = request.getEmail() == null
+                ? ""
+                : request.getEmail().trim().toLowerCase(Locale.ROOT);
+
+        String nationalId = request.getNationalId() == null
+                ? ""
+                : request.getNationalId().trim();
+
+        String phoneNumber = request.getPhoneNumber() == null
+                ? ""
+                : request.getPhoneNumber().trim();
+
+        String password = request.getPassword();
+
+        if (name.isBlank() || name.length() > 150) {
+            throw new IllegalArgumentException(
+                    "A valid full name is required."
+            );
+        }
+
+        if (email.isBlank()
+                || !email.matches(
+                "^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$"
+        )) {
+            throw new IllegalArgumentException(
+                    "A valid email address is required."
+            );
+        }
+
+        if (nationalId.isBlank()) {
+            throw new IllegalArgumentException(
+                    "National ID is required."
+            );
+        }
+
+        if (phoneNumber.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Phone number is required."
+            );
+        }
+
+        validatePassword(password);
+
+        if (userRepository.findByEmail(email).isPresent()) {
+            throw new IllegalArgumentException(
+                    "An account with this email address already exists."
+            );
+        }
+
+        if (userRepository.existsByNationalId(nationalId)) {
+            throw new IllegalArgumentException(
+                    "A profile with this National ID already exists."
+            );
+        }
+
+        /*
+         * Public registration can ONLY create APPLICANT accounts.
+         * Privileged roles are assigned through administrator
+         * controlled onboarding.
+         *
+         * Applicants complete their registration here.
+         * Approval remains a separate administrator action.
+         */
+        LocalDateTime completedAt = LocalDateTime.now();
 
         User user = User.builder()
-                .name(account.getFullName())
-                .email(account.getEmail())
-                .password(passwordEncoder.encode(request.getPassword()))
-                .role(userRole)
-                .nationalId(request.getNationalId())
+                .name(name)
+                .email(email)
+                .phoneNumber(phoneNumber)
+                .nationalId(nationalId)
+                .password(passwordEncoder.encode(password))
+                .role(Role.APPLICANT)
                 .status(AccountStatus.PENDING)
+                .registrationCompleted(true)
+                .registrationCompletedAt(completedAt)
                 .build();
 
-        userRepository.save(user);
+        User savedUser = userRepository.save(user);
 
         Map<String, Object> response = new HashMap<>();
-        response.put("message", "Registration successful. Await admin approval.");
+
+        response.put(
+                "message",
+                "Registration successful. Await admin approval."
+        );
+        response.put("userId", savedUser.getId());
+        response.put("name", savedUser.getName());
+        response.put("email", savedUser.getEmail());
+        response.put("role", savedUser.getRole().name());
+        response.put("status", savedUser.getStatus().name());
+        response.put("registrationCompleted", true);
+
         return response;
     }
 
+    // =========================================================
+    // CURRENT USER PROFILE
+    // =========================================================
+
     public Map<String, Object> getCurrentUser(String email) {
 
-        User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+        User user = userRepository.findByEmail(
+                normalizeEmail(email)
+        ).orElseThrow(() ->
+                new RuntimeException("User not found")
+        );
 
-        Account account = accountRepository
+        Account account = user.getNationalId() == null
+                ? null
+                : accountRepository
                 .findByNationalId(user.getNationalId())
                 .orElse(null);
 
@@ -94,12 +193,17 @@ public class AuthService {
 
         response.put("name", user.getName());
         response.put("email", user.getEmail());
-        response.put("role", user.getRole().name());
+        response.put(
+                "role",
+                user.getRole() == null ? null : user.getRole().name()
+        );
         response.put("nationalId", user.getNationalId());
 
         response.put(
                 "phoneNumber",
-                account != null ? account.getPhoneNumber() : user.getPhoneNumber()
+                account != null
+                        ? account.getPhoneNumber()
+                        : user.getPhoneNumber()
         );
 
         response.put(
@@ -112,13 +216,12 @@ public class AuthService {
                 account != null ? account.getBranch() : "Head Office"
         );
 
-        // Prefer the user's uploaded profile photograph.
         String imageUrl = user.getUserImageUrl();
 
-        // Fall back to the account photograph if no user photograph exists.
         if (imageUrl == null || imageUrl.isBlank()) {
 
-            if (account != null && account.getImageUrl() != null
+            if (account != null
+                    && account.getImageUrl() != null
                     && !account.getImageUrl().isBlank()) {
 
                 String accountImage = account.getImageUrl();
@@ -130,11 +233,13 @@ public class AuthService {
 
                 } else {
 
-                    imageUrl = "http://localhost:8080/api/accounts/image/"
-                            + user.getNationalId();
+                    imageUrl =
+                            "http://localhost:8080/api/accounts/image/"
+                                    + user.getNationalId();
                 }
 
             } else {
+
                 imageUrl = "assets/default-admin.png";
             }
 
@@ -150,20 +255,300 @@ public class AuthService {
         return response;
     }
 
+    // =========================================================
+    // PASSWORD LOGIN
+    // =========================================================
+
     public AuthResponse loginAndReturnSession(LoginRequest request) {
 
-        User user = userRepository.findByEmail(request.getEmail())
-                .orElseThrow(() -> new RuntimeException("Invalid credentials"));
+        if (request == null
+                || request.getEmail() == null
+                || request.getEmail().isBlank()
+                || request.getPassword() == null) {
 
-        if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
             throw new RuntimeException("Invalid credentials");
         }
 
+        String email = normalizeEmail(request.getEmail());
+
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() ->
+                        new RuntimeException("Invalid credentials")
+                );
+
+        if (user.getPassword() == null
+                || !passwordEncoder.matches(
+                request.getPassword(),
+                user.getPassword()
+        )) {
+            throw new RuntimeException("Invalid credentials");
+        }
+
+        ensureLoginAllowed(user);
+
+        return createAuthResponse(
+                user,
+                "Login successful"
+        );
+    }
+
+    // =========================================================
+    // OTP DELIVERY
+    // =========================================================
+
+    private void sendOtpToUser(User user) {
+
+        ensureLoginAllowed(user);
+
+        String otp = generateOtp();
+
+        LocalDateTime expiry = LocalDateTime.now().plusMinutes(5);
+
+        OtpData otpData = new OtpData(otp, expiry);
+
+        // Store against email
+        otpStore.put(
+                normalizeEmail(user.getEmail()),
+                otpData
+        );
+
+        // Store against normalized phone if available
+        if (user.getPhoneNumber() != null
+                && !user.getPhoneNumber().isBlank()) {
+
+            String normalizedPhone =
+                    normalizePhone(user.getPhoneNumber());
+
+            otpStore.put(normalizedPhone, otpData);
+
+            // Send SMS when Twilio is configured
+            if (twilioAccountSid != null
+                    && !twilioAccountSid.isBlank()
+                    && twilioAuthToken != null
+                    && !twilioAuthToken.isBlank()
+                    && twilioPhoneNumber != null
+                    && !twilioPhoneNumber.isBlank()) {
+
+                try {
+
+                    Twilio.init(
+                            twilioAccountSid,
+                            twilioAuthToken
+                    );
+
+                    Message.creator(
+                            new PhoneNumber(normalizedPhone),
+                            new PhoneNumber(twilioPhoneNumber),
+                            "Your CrediCore verification code is: "
+                                    + otp
+                                    + ". Valid for 5 minutes."
+                    ).create();
+
+                } catch (Exception e) {
+
+                    System.err.println(
+                            "Twilio SMS delivery failed: "
+                                    + e.getMessage()
+                    );
+                }
+            }
+        }
+
+        // Send email when SendGrid is available
+        try {
+
+            if (sendGridEmailService != null) {
+                sendGridEmailService.sendOtpEmail(
+                        user.getEmail(),
+                        otp
+                );
+            }
+
+        } catch (Exception e) {
+
+            System.err.println(
+                    "SendGrid OTP delivery failed: "
+                            + e.getMessage()
+            );
+        }
+    }
+
+    // =========================================================
+    // SEND OTP TO EMAIL AND PHONE
+    // =========================================================
+
+    public Map<String, Object> sendOtpToBoth(String email) {
+
+        User user = userRepository.findByEmail(
+                normalizeEmail(email)
+        ).orElseThrow(() ->
+                new RuntimeException("User not found")
+        );
+
+        sendOtpToUser(user);
+
+        Map<String, Object> response = new HashMap<>();
+
+        response.put(
+                "message",
+                "OTP generated. Delivery depends on configured channels."
+        );
+        response.put("email", user.getEmail());
+        response.put("phoneNumber", user.getPhoneNumber());
+
+        return response;
+    }
+
+    // =========================================================
+    // VERIFY OTP
+    // =========================================================
+
+    public boolean verifyOtp(String identifier, String otp) {
+
+        if (identifier == null
+                || identifier.isBlank()
+                || otp == null
+                || otp.isBlank()) {
+
+            return false;
+        }
+
+        String trimmedIdentifier = identifier.trim();
+
+        List<String> possibleKeys = new ArrayList<>();
+
+        if (trimmedIdentifier.contains("@")) {
+
+            possibleKeys.add(
+                    normalizeEmail(trimmedIdentifier)
+            );
+
+        } else {
+
+            possibleKeys.add(
+                    normalizePhone(trimmedIdentifier)
+            );
+
+            possibleKeys.add(trimmedIdentifier);
+        }
+
+        for (String key : possibleKeys) {
+
+            OtpData otpData = otpStore.get(key);
+
+            if (otpData == null) {
+                continue;
+            }
+
+            if (otpData.expiryTime.isBefore(LocalDateTime.now())) {
+
+                removeOtp(otpData);
+
+                return false;
+            }
+
+            if (otpData.otp.equals(otp.trim())) {
+
+                /*
+                 * Remove every key referencing this same OTP.
+                 * This prevents reuse through email after
+                 * verification using the phone number, or vice versa.
+                 */
+                removeOtp(otpData);
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void removeOtp(OtpData otpData) {
+
+        otpStore.entrySet().removeIf(
+                entry -> entry.getValue() == otpData
+        );
+    }
+
+    // =========================================================
+    // VERIFY OTP AND RETURN SESSION
+    // =========================================================
+
+    public AuthResponse verifyOtpAndReturnSession(
+            String email,
+            String otp
+    ) {
+
+        String normalizedEmail = normalizeEmail(email);
+
+        User user = userRepository.findByEmail(normalizedEmail)
+                .orElseThrow(() ->
+                        new RuntimeException("User not found")
+                );
+
+        /*
+         * Check approval and registration before issuing
+         * an authenticated session.
+         */
+        ensureLoginAllowed(user);
+
+        boolean verified = verifyOtp(normalizedEmail, otp);
+
+        if (!verified) {
+            throw new RuntimeException(
+                    "Invalid or expired OTP"
+            );
+        }
+
+        return createAuthResponse(
+                user,
+                "OTP verified successfully"
+        );
+    }
+
+    // =========================================================
+    // CENTRAL LOGIN ELIGIBILITY CHECK
+    // =========================================================
+
+    private void ensureLoginAllowed(User user) {
+
         if (user.getStatus() != AccountStatus.APPROVED) {
+
             throw new AccountNotApprovedException(
                     "Account not approved. Please wait for admin approval."
             );
         }
+
+        if (user.getRole() == null) {
+
+            throw new AccountNotApprovedException(
+                    "Account role has not been configured. Contact administrator."
+            );
+        }
+
+        /*
+         * Explicitly incomplete users cannot log in.
+         *
+         * NULL is temporarily accepted for compatibility with
+         * legacy users created before this field existed.
+         * Backfill legacy records before enforcing strict NOT NULL.
+         */
+        if (Boolean.FALSE.equals(user.getRegistrationCompleted())) {
+
+            throw new AccountNotApprovedException(
+                    "Registration is incomplete. Please complete your registration invitation."
+            );
+        }
+    }
+
+    // =========================================================
+    // AUTHENTICATION RESPONSE
+    // =========================================================
+
+    private AuthResponse createAuthResponse(
+            User user,
+            String message
+    ) {
 
         String token = jwtUtil.generateToken(
                 user.getEmail(),
@@ -182,153 +567,52 @@ public class AuthService {
                 .build();
     }
 
+    // =========================================================
+    // UPDATE USER PROFILE
+    // =========================================================
 
-    /** Send OTP via Twilio SMS + SendGrid Email */
-    private void sendOtpToUser(User user) {
-        String otp = generateOtp();
-
-        // Save OTP in memory for 5 minutes
-        otpStore.put(user.getEmail(), new OtpData(otp, LocalDateTime.now().plusMinutes(5)));
-        if (user.getPhoneNumber() != null
-                && twilioAccountSid != null
-                && !twilioAccountSid.isBlank()
-                && twilioAuthToken != null
-                && !twilioAuthToken.isBlank()) {
-
-            String normalizedPhone = normalizePhone(user.getPhoneNumber());
-            otpStore.put(normalizedPhone, new OtpData(otp, LocalDateTime.now().plusMinutes(5)));
-
-            // Send SMS
-            try {
-                Twilio.init(twilioAccountSid, twilioAuthToken);
-                Message.creator(
-                        new PhoneNumber(normalizedPhone),
-                        new PhoneNumber(twilioPhoneNumber != null ? twilioPhoneNumber : "+12174066363"),
-                        "🔐 Your verification code is: " + otp
-                ).create();
-                System.out.println("OTP sent via SMS to " + normalizedPhone);
-            } catch (Exception e) {
-                System.out.println("Twilio SMS failed: " + e.getMessage());
-            }
-        }
-
-        // Send Email
-        try {
-            if (sendGridEmailService != null) {
-                sendGridEmailService.sendOtpEmail(user.getEmail(), otp);
-            }
-        } catch (Exception e) {
-            System.out.println("SendGrid Email failed: " + e.getMessage());
-        }
-
-    }
-
-    /** Send OTP to user by email (and phone if available) */
-    public Map<String, Object> sendOtpToBoth(String email) {
-        // Find user by email
-        User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
-
-        // Send OTP via the existing private method
-        sendOtpToUser(user);
-
-        // Return a response
-        Map<String, Object> response = new HashMap<>();
-        response.put("message", "OTP sent successfully to email and phone (if available)");
-        response.put("email", user.getEmail());
-        response.put("phoneNumber", user.getPhoneNumber());
-        return response;
-    }
-
-
-    /** Verify OTP */
-    public boolean verifyOtp(String identifier, String otp) {
-        if (identifier == null || identifier.isBlank() || otp == null || otp.isBlank()) {
-            return false;
-        }
-
-        identifier = identifier.trim();
-        otp = otp.trim();
-
-        String normalizedPhone = identifier.startsWith("0") ? "+254" + identifier.substring(1) : null;
-        List<String> possibleKeys = new ArrayList<>();
-        possibleKeys.add(identifier);
-        if (normalizedPhone != null) possibleKeys.add(normalizedPhone);
-
-        for (String key : possibleKeys) {
-            OtpData otpData = otpStore.get(key);
-            if (otpData != null) {
-                if (otpData.expiryTime.isBefore(LocalDateTime.now())) {
-                    otpStore.remove(key);
-                    return false;
-                }
-                if (otpData.otp.equals(otp)) {
-                    otpStore.remove(key);
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    /** Verify OTP and return JWT + user info */
-    public AuthResponse verifyOtpAndReturnSession(String email, String otp) {
-        boolean ok = verifyOtp(email, otp);
-        if (!ok) throw new RuntimeException("Invalid or expired OTP");
-
-        User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
-
-        String token = jwtUtil.generateToken(user.getEmail(), user.getRole().name(), user.getName());
-
-
-        return new AuthResponse(
-                token,
-                "OTP verified successfully",
-                user.getName(),
-                user.getRole().name(),
-                user.getEmail(),
-                user.getNationalId(),
-                user.getUserImageUrl(),
-                user.getPhoneNumber()
-        );
-    }
-
-
-
-    /** Update user details */
-
-    /**
-     * Update the authenticated user's permitted profile details.
-     * The user's identity comes from the authenticated email.
-     */
     public Map<String, Object> updateUserDetails(
             String authenticatedEmail,
             Map<String, String> request
     ) {
-        User existingUser = userRepository.findByEmail(authenticatedEmail)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        User existingUser = userRepository.findByEmail(
+                normalizeEmail(authenticatedEmail)
+        ).orElseThrow(() ->
+                new RuntimeException("User not found")
+        );
+
+        if (request == null) {
+            throw new IllegalArgumentException(
+                    "Profile details are required."
+            );
+        }
 
         String name = request.get("name");
         String phoneNumber = request.get("phoneNumber");
 
         if (name == null || name.isBlank()) {
-            throw new IllegalArgumentException("Name is required");
+            throw new IllegalArgumentException(
+                    "Name is required"
+            );
         }
 
         if (name.trim().length() > 150) {
-            throw new IllegalArgumentException("Name is too long");
+            throw new IllegalArgumentException(
+                    "Name is too long"
+            );
         }
 
-        if (phoneNumber != null && phoneNumber.trim().length() > 30) {
-            throw new IllegalArgumentException("Phone number is too long");
+        if (phoneNumber != null
+                && phoneNumber.trim().length() > 30) {
+
+            throw new IllegalArgumentException(
+                    "Phone number is too long"
+            );
         }
 
         existingUser.setName(name.trim());
 
-        // Update the user's own phone number.
-        // Do not overwrite account information or branch details.
         existingUser.setPhoneNumber(
                 phoneNumber == null || phoneNumber.isBlank()
                         ? null
@@ -340,91 +624,198 @@ public class AuthService {
         return getCurrentUser(existingUser.getEmail());
     }
 
-    /**
-     * Change password for the authenticated user.
-     */
+    // =========================================================
+    // CHANGE PASSWORD
+    // =========================================================
+
     public void changePassword(
             String authenticatedEmail,
             String currentPassword,
             String newPassword
     ) {
-        User user = userRepository.findByEmail(authenticatedEmail)
-                .orElseThrow(() -> new RuntimeException("User not found"));
 
-        if (currentPassword == null || currentPassword.isBlank()) {
-            throw new IllegalArgumentException("Current password is required");
-        }
+        User user = userRepository.findByEmail(
+                normalizeEmail(authenticatedEmail)
+        ).orElseThrow(() ->
+                new RuntimeException("User not found")
+        );
 
-        if (newPassword == null || newPassword.length() < 8
-                || !newPassword.matches("^(?=.*[A-Za-z])(?=.*\\d).+$")) {
+        if (currentPassword == null
+                || currentPassword.isBlank()) {
+
             throw new IllegalArgumentException(
-                    "New password must contain at least 8 characters, including letters and numbers"
+                    "Current password is required"
             );
         }
 
-        if (!passwordEncoder.matches(currentPassword, user.getPassword())) {
-            throw new IllegalArgumentException("Current password is incorrect");
+        validatePassword(newPassword);
+
+        if (!passwordEncoder.matches(
+                currentPassword,
+                user.getPassword()
+        )) {
+
+            throw new IllegalArgumentException(
+                    "Current password is incorrect"
+            );
         }
 
-        if (passwordEncoder.matches(newPassword, user.getPassword())) {
+        if (passwordEncoder.matches(
+                newPassword,
+                user.getPassword()
+        )) {
+
             throw new IllegalArgumentException(
                     "New password must be different from the current password"
             );
         }
 
-        user.setPassword(passwordEncoder.encode(newPassword));
+        user.setPassword(
+                passwordEncoder.encode(newPassword)
+        );
+
         userRepository.save(user);
     }
 
+    // =========================================================
+    // PASSWORD VALIDATION
+    // =========================================================
 
-    /** Generate 6-digit OTP */
+    private void validatePassword(String password) {
+
+        if (password == null
+                || password.length() < 8
+                || !password.matches(
+                "^(?=.*[A-Za-z])(?=.*\\d).+$"
+        )) {
+
+            throw new IllegalArgumentException(
+                    "Password must contain at least 8 characters, including letters and numbers."
+            );
+        }
+    }
+
+    // =========================================================
+    // OTP GENERATION
+    // =========================================================
+
     private String generateOtp() {
-        return String.format("%06d", new Random().nextInt(999999));
+
+        return String.format(
+                "%06d",
+                SECURE_RANDOM.nextInt(1_000_000)
+        );
     }
 
-    /** Normalize Kenyan phone numbers */
+    // =========================================================
+    // EMAIL NORMALIZATION
+    // =========================================================
+
+    private String normalizeEmail(String email) {
+
+        if (email == null || email.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Email is required."
+            );
+        }
+
+        return email.trim().toLowerCase(Locale.ROOT);
+    }
+
+    // =========================================================
+    // KENYAN PHONE NORMALIZATION
+    // =========================================================
+
     private String normalizePhone(String phoneNumber) {
-        if (phoneNumber.startsWith("+")) return phoneNumber;
-        if (phoneNumber.startsWith("0")) return "+254" + phoneNumber.substring(1);
-        return phoneNumber;
+
+        if (phoneNumber == null || phoneNumber.isBlank()) {
+            return "";
+        }
+
+        String phone = phoneNumber.trim().replaceAll("\\s+", "");
+
+        if (phone.startsWith("+")) {
+            return phone;
+        }
+
+        if (phone.startsWith("0")) {
+            return "+254" + phone.substring(1);
+        }
+
+        if (phone.startsWith("254")) {
+            return "+" + phone;
+        }
+
+        return phone;
     }
 
-    /** Custom exception for unapproved accounts */
-    public static class AccountNotApprovedException extends RuntimeException {
+    // =========================================================
+    // UNAPPROVED ACCOUNT EXCEPTION
+    // =========================================================
+
+    public static class AccountNotApprovedException
+            extends RuntimeException {
+
         public AccountNotApprovedException(String message) {
             super(message);
         }
     }
 
+    // =========================================================
+    // VERIFY ACCOUNT FOR PASSWORD RESET
+    // =========================================================
 
-    public void verifyAccount(String email, String accountNumber) {
+    public void verifyAccount(
+            String email,
+            String accountNumber
+    ) {
 
-        User user = userRepository.findByEmail(email)
+        User user = userRepository.findByEmail(
+                normalizeEmail(email)
+        ).orElseThrow(() ->
+                new RuntimeException("Email not found.")
+        );
+
+        Account account = accountRepository
+                .findByAccountNumber(accountNumber)
                 .orElseThrow(() ->
-                        new RuntimeException("Email not found."));
+                        new RuntimeException("Account number not found.")
+                );
 
-        Account account = accountRepository.findByAccountNumber(accountNumber)
-                .orElseThrow(() ->
-                        new RuntimeException("Account number not found."));
+        if (!Objects.equals(
+                user.getNationalId(),
+                account.getNationalId()
+        )) {
 
-        if (!user.getNationalId().equals(account.getNationalId())) {
-            throw new RuntimeException("Email and account number do not match.");
+            throw new RuntimeException(
+                    "Email and account number do not match."
+            );
         }
-
     }
+
+    // =========================================================
+    // RESET PASSWORD USING BANK ACCOUNT
+    // =========================================================
 
     public void resetPasswordUsingAccount(
             String email,
             String accountNumber,
-            String newPassword) {
+            String newPassword
+    ) {
+
+        validatePassword(newPassword);
 
         verifyAccount(email, accountNumber);
 
-        User user = userRepository.findByEmail(email)
-                .orElseThrow(() ->
-                        new RuntimeException("User not found."));
+        User user = userRepository.findByEmail(
+                normalizeEmail(email)
+        ).orElseThrow(() ->
+                new RuntimeException("User not found.")
+        );
 
-        user.setPassword(passwordEncoder.encode(newPassword));
+        user.setPassword(
+                passwordEncoder.encode(newPassword)
+        );
 
         userRepository.save(user);
     }

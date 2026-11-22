@@ -57,83 +57,139 @@ public class TenantRentService {
     }
 
     /*
-     * Called by the scheduler.
-     * Safe to rerun: the lease-period unique constraint prevents duplicate
-     * charges for the same month.
+     * Global generation method.
+     * Called by the scheduled system process.
      */
     public int generateRentCharges() {
+
         LocalDate today = LocalDate.now();
-        YearMonth currentMonth = YearMonth.from(today);
+
         int generated = 0;
 
         List<TenantLease> leases =
                 leaseRepository.findByStatusIn(BILLABLE_LEASE_STATUSES);
 
         for (TenantLease lease : leases) {
-            LocalDate billingEnd = lease.getEndDate();
-
-            if (lease.getTerminatedAt() != null) {
-                LocalDate terminationDate = lease.getTerminatedAt().toLocalDate();
-
-                if (terminationDate.isBefore(billingEnd)) {
-                    billingEnd = terminationDate;
-                }
-            }
-
-            if (lease.getStartDate().isAfter(today)
-                    || billingEnd.isBefore(lease.getStartDate())) {
-                continue;
-            }
-
-            YearMonth period = YearMonth.from(lease.getStartDate());
-
-            while (!period.isAfter(currentMonth)
-                    && !period.atDay(1).isAfter(billingEnd)) {
-
-                LocalDate periodStart = period.atDay(1);
-                LocalDate periodEnd = period.atEndOfMonth();
-
-                boolean overlapsLease =
-                        !periodEnd.isBefore(lease.getStartDate())
-                                && !periodStart.isAfter(billingEnd);
-
-                if (overlapsLease
-                        && !chargeRepository.existsByLease_IdAndPeriodStart(
-                        lease.getId(), periodStart)) {
-
-                    TenantRentCharge charge = new TenantRentCharge();
-                    charge.setLease(lease);
-                    charge.setOwner(lease.getOwner());
-                    charge.setPeriodStart(periodStart);
-                    charge.setPeriodEnd(periodEnd);
-                    charge.setDueDate(
-                            period.atDay(Math.min(
-                                    lease.getRentDueDay(),
-                                    period.lengthOfMonth()
-                            ))
-                    );
-                    charge.setAmount(lease.getMonthlyRent());
-                    charge.setPaidAmount(BigDecimal.ZERO);
-                    charge.setStatus(
-                            charge.getDueDate().isBefore(today)
-                                    ? TenantRentCharge.ChargeStatus.OVERDUE
-                                    : TenantRentCharge.ChargeStatus.OPEN
-                    );
-
-                    TenantRentCharge savedCharge = chargeRepository.saveAndFlush(charge);
-
-// Automatically use available advance payments.
-                    applyAvailableCredits(lease, savedCharge);
-
-                    generated++;
-                }
-
-                period = period.plusMonths(1);
-            }
+            generated += generateChargesForLease(lease, today);
         }
 
         chargeRepository.flush();
+
+        // Global refresh is retained for the system scheduler.
         refreshOverdueStatuses(today);
+
+        return generated;
+    }
+
+    /*
+     * Generates charges for one lease belonging to the authenticated user.
+     * Used when an agent activates an individual lease.
+     */
+    public int generateRentChargesForLease(
+            Long leaseId,
+            String authenticatedEmail) {
+
+        User owner = getOwner(authenticatedEmail);
+
+        TenantLease lease = leaseRepository
+                .findByIdAndOwner_Id(leaseId, owner.getId())
+                .orElseThrow(() ->
+                        notFound("Lease not found in your portfolio."));
+
+        if (!BILLABLE_LEASE_STATUSES.contains(lease.getStatus())) {
+            throw badRequest(
+                    "Rent charges can only be generated for an active or previously billable lease.");
+        }
+
+        int generated = generateChargesForLease(
+                lease,
+                LocalDate.now()
+        );
+
+        chargeRepository.flush();
+
+        return generated;
+    }
+
+    /*
+     * Shared generation logic.
+     * This method processes only the supplied lease.
+     */
+    private int generateChargesForLease(
+            TenantLease lease,
+            LocalDate today) {
+
+        YearMonth currentMonth = YearMonth.from(today);
+
+        LocalDate billingEnd = lease.getEndDate();
+
+        if (lease.getTerminatedAt() != null) {
+            LocalDate terminationDate =
+                    lease.getTerminatedAt().toLocalDate();
+
+            if (terminationDate.isBefore(billingEnd)) {
+                billingEnd = terminationDate;
+            }
+        }
+
+        if (lease.getStartDate().isAfter(today)
+                || billingEnd.isBefore(lease.getStartDate())) {
+            return 0;
+        }
+
+        int generated = 0;
+
+        YearMonth period = YearMonth.from(lease.getStartDate());
+
+        while (!period.isAfter(currentMonth)
+                && !period.atDay(1).isAfter(billingEnd)) {
+
+            LocalDate periodStart = period.atDay(1);
+            LocalDate periodEnd = period.atEndOfMonth();
+
+            boolean overlapsLease =
+                    !periodEnd.isBefore(lease.getStartDate())
+                            && !periodStart.isAfter(billingEnd);
+
+            if (overlapsLease
+                    && !chargeRepository.existsByLease_IdAndPeriodStart(
+                    lease.getId(),
+                    periodStart)) {
+
+                TenantRentCharge charge = new TenantRentCharge();
+
+                charge.setLease(lease);
+                charge.setOwner(lease.getOwner());
+                charge.setPeriodStart(periodStart);
+                charge.setPeriodEnd(periodEnd);
+
+                charge.setDueDate(
+                        period.atDay(Math.min(
+                                lease.getRentDueDay(),
+                                period.lengthOfMonth()
+                        ))
+                );
+
+                charge.setAmount(lease.getMonthlyRent());
+                charge.setPaidAmount(BigDecimal.ZERO);
+
+                charge.setStatus(
+                        charge.getDueDate().isBefore(today)
+                                ? TenantRentCharge.ChargeStatus.OVERDUE
+                                : TenantRentCharge.ChargeStatus.OPEN
+                );
+
+                TenantRentCharge savedCharge =
+                        chargeRepository.saveAndFlush(charge);
+
+                // Apply any unallocated advance payments.
+                applyAvailableCredits(lease, savedCharge);
+
+                generated++;
+            }
+
+            period = period.plusMonths(1);
+        }
 
         return generated;
     }
@@ -298,28 +354,47 @@ public class TenantRentService {
     }
 
 
-
     private void applyAvailableCredits(
             TenantLease lease,
             TenantRentCharge charge) {
 
+        if (lease == null || charge == null
+                || charge.getOwner() == null
+                || charge.getLease() == null
+                || !charge.getOwner().getId().equals(lease.getOwner().getId())
+                || !charge.getLease().getId().equals(lease.getId())) {
+            throw conflict("Rent charge ownership does not match the lease.");
+        }
+
         List<TenantRentPayment> payments =
                 paymentRepository
-                        .findByLease_IdAndStatusOrderByReceivedAtAsc(
+                        .findByLease_IdAndOwner_IdAndStatusOrderByReceivedAtAsc(
                                 lease.getId(),
+                                lease.getOwner().getId(),
                                 TenantRentPayment.PaymentStatus.POSTED
                         );
 
         for (TenantRentPayment payment : payments) {
+
             BigDecimal balance = charge.getBalance();
 
             if (balance.signum() <= 0) {
                 break;
             }
 
+            if (payment.getOwner() == null
+                    || !payment.getOwner().getId().equals(lease.getOwner().getId())
+                    || payment.getLease() == null
+                    || !payment.getLease().getId().equals(lease.getId())) {
+                throw conflict("Payment ownership does not match the lease.");
+            }
+
             List<TenantPaymentAllocation> existingAllocations =
                     allocationRepository
-                            .findByPayment_IdOrderByIdAsc(payment.getId());
+                            .findByPayment_IdAndPayment_Owner_IdOrderByIdAsc(
+                                    payment.getId(),
+                                    lease.getOwner().getId()
+                            );
 
             BigDecimal alreadyAllocated = existingAllocations.stream()
                     .map(TenantPaymentAllocation::getAmount)
@@ -366,20 +441,53 @@ public class TenantRentService {
 
         TenantRentPayment payment = paymentRepository
                 .findForUpdate(paymentId, owner.getId())
-                .orElseThrow(() -> notFound("Payment not found in your portfolio."));
+                .orElseThrow(() ->
+                        notFound("Payment not found in your portfolio."));
 
         if (payment.getStatus() == TenantRentPayment.PaymentStatus.REVERSED) {
             throw conflict("This payment has already been reversed.");
         }
 
+        if (payment.getLease() == null
+                || payment.getOwner() == null
+                || !payment.getOwner().getId().equals(owner.getId())) {
+            throw conflict("Payment ownership information is invalid.");
+        }
+
+        Long leaseId = payment.getLease().getId();
+
         List<TenantPaymentAllocation> allocations =
-                allocationRepository.findByPayment_IdOrderByIdAsc(paymentId);
+                allocationRepository
+                        .findByPayment_IdAndPayment_Owner_IdOrderByIdAsc(
+                                paymentId,
+                                owner.getId()
+                        );
+
+        BigDecimal totalAllocated = BigDecimal.ZERO;
 
         for (TenantPaymentAllocation allocation : allocations) {
+
+            if (allocation.getAmount() == null
+                    || allocation.getAmount().signum() <= 0) {
+                throw conflict("An invalid payment allocation was found.");
+            }
+
+            if (allocation.getCharge() == null
+                    || allocation.getCharge().getLease() == null
+                    || !allocation.getCharge().getLease().getId().equals(leaseId)) {
+                throw conflict("Payment allocation does not belong to this lease.");
+            }
+
+            totalAllocated = totalAllocated.add(allocation.getAmount());
+
             TenantRentCharge charge = chargeRepository
-                    .findChargeForUpdate(
-                            allocation.getCharge().getId(), owner.getId())
-                    .orElseThrow(() -> notFound("Allocated rent charge was not found."));
+                    .findByIdAndOwner_IdAndLease_Id(
+                            allocation.getCharge().getId(),
+                            owner.getId(),
+                            leaseId
+                    )
+                    .orElseThrow(() ->
+                            notFound("Allocated rent charge was not found in your portfolio."));
 
             BigDecimal restoredPaidAmount =
                     charge.getPaidAmount().subtract(allocation.getAmount());
@@ -389,8 +497,14 @@ public class TenantRentService {
             }
 
             charge.setPaidAmount(restoredPaidAmount);
+
             updateChargeStatus(charge);
+
             chargeRepository.save(charge);
+        }
+
+        if (totalAllocated.compareTo(payment.getAmount()) > 0) {
+            throw conflict("Payment allocations exceed the original payment amount.");
         }
 
         payment.setStatus(TenantRentPayment.PaymentStatus.REVERSED);
@@ -412,6 +526,29 @@ public class TenantRentService {
                 .map(this::toPaymentResponse)
                 .toList();
     }
+
+
+    @Transactional(readOnly = true)
+    public List<TenantRentPaymentResponse> getPaymentsForLease(
+            Long leaseId,
+            String email) {
+
+        User owner = getOwner(email);
+
+        leaseRepository.findByIdAndOwner_Id(leaseId, owner.getId())
+                .orElseThrow(() ->
+                        notFound("Lease not found in your portfolio."));
+
+        return paymentRepository
+                .findByOwner_IdAndLease_IdOrderByReceivedAtDesc(
+                        owner.getId(),
+                        leaseId
+                )
+                .stream()
+                .map(this::toPaymentResponse)
+                .toList();
+    }
+
 
     private void updateChargeStatus(TenantRentCharge charge) {
         if (charge.getPaidAmount().compareTo(charge.getAmount()) >= 0) {
@@ -455,14 +592,39 @@ public class TenantRentService {
     private TenantRentPaymentResponse toPaymentResponse(
             TenantRentPayment payment) {
 
+        if (payment.getOwner() == null || payment.getLease() == null) {
+            throw conflict("Payment ownership information is incomplete.");
+        }
+
         List<TenantRentPaymentResponse.Allocation> allocations =
-                allocationRepository.findByPayment_IdOrderByIdAsc(payment.getId())
+                allocationRepository
+                        .findByPayment_IdAndPayment_Owner_IdOrderByIdAsc(
+                                payment.getId(),
+                                payment.getOwner().getId()
+                        )
                         .stream()
-                        .map(a -> new TenantRentPaymentResponse.Allocation(
-                                a.getCharge().getId(),
-                                YearMonth.from(a.getCharge().getPeriodStart()).toString(),
-                                a.getAmount()
-                        ))
+                        .map(a -> {
+
+                            if (a.getCharge() == null
+                                    || a.getCharge().getOwner() == null
+                                    || a.getCharge().getLease() == null
+                                    || !a.getCharge().getOwner().getId()
+                                    .equals(payment.getOwner().getId())
+                                    || !a.getCharge().getLease().getId()
+                                    .equals(payment.getLease().getId())) {
+                                throw conflict(
+                                        "Payment allocation ownership is inconsistent."
+                                );
+                            }
+
+                            return new TenantRentPaymentResponse.Allocation(
+                                    a.getCharge().getId(),
+                                    YearMonth.from(
+                                            a.getCharge().getPeriodStart()
+                                    ).toString(),
+                                    a.getAmount()
+                            );
+                        })
                         .toList();
 
         return new TenantRentPaymentResponse(
@@ -482,16 +644,34 @@ public class TenantRentService {
         );
     }
 
+
     private User getOwner(String email) {
+
         if (email == null || email.isBlank()) {
             throw new ResponseStatusException(
-                    HttpStatus.UNAUTHORIZED, "Authenticated user could not be identified.");
+                    HttpStatus.UNAUTHORIZED,
+                    "Authenticated user could not be identified."
+            );
         }
 
-        return userRepository.findByEmail(email.trim())
+        User user = userRepository.findByEmail(email.trim())
                 .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.UNAUTHORIZED, "Authenticated user was not found."));
+                        HttpStatus.UNAUTHORIZED,
+                        "Authenticated user was not found."
+                ));
+
+        if (user.getRole() != Role.TENANT_AGENT
+                && user.getRole() != Role.ADMIN) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "You are not authorized to access rental management."
+            );
+        }
+
+        return user;
     }
+
 
     private String clean(String value) {
         return value == null || value.isBlank() ? null : value.trim();

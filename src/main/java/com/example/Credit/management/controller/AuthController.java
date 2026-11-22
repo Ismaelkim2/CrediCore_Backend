@@ -1,6 +1,4 @@
-
 package com.example.Credit.management.controller;
-
 import com.example.Credit.management.Model.*;
 import com.example.Credit.management.Repository.AccountRepository;
 import com.example.Credit.management.Repository.UserRepository;
@@ -8,9 +6,7 @@ import com.example.Credit.management.SecConfig.AuthResponse;
 import com.example.Credit.management.SecConfig.JwtUtil;
 import com.example.Credit.management.services.AuthService;
 import com.example.Credit.management.services.CloudinaryImageStorageService;
-
-import jakarta.servlet.http.HttpServletRequest;
-
+import com.example.Credit.management.services.StaffOnboardingService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -33,8 +29,8 @@ public class AuthController {
     private final UserRepository userRepository;
     private final AccountRepository accountRepository;
     private final JwtUtil jwtUtil;
-
     private final CloudinaryImageStorageService cloudinaryStorage;
+    private final StaffOnboardingService staffOnboardingService;
 
     @Autowired
     public AuthController(
@@ -42,24 +38,36 @@ public class AuthController {
             UserRepository userRepository,
             AccountRepository accountRepository,
             JwtUtil jwtUtil,
-            CloudinaryImageStorageService cloudinaryStorage
+            CloudinaryImageStorageService cloudinaryStorage,
+            StaffOnboardingService staffOnboardingService
     ) {
         this.authService = authService;
         this.userRepository = userRepository;
         this.accountRepository = accountRepository;
         this.jwtUtil = jwtUtil;
         this.cloudinaryStorage = cloudinaryStorage;
+        this.staffOnboardingService = staffOnboardingService;
     }
 
-    /* REGISTER */
+    // =====================================================
+    // PUBLIC APPLICANT REGISTRATION
+    // =====================================================
+
     @PostMapping("/register")
-    public ResponseEntity<?> register(@RequestBody RegisterRequest request) {
+    public ResponseEntity<?> register(
+            @RequestBody RegisterRequest request
+    ) {
         return ResponseEntity.ok(authService.register(request));
     }
 
-    /* LOGIN */
+    // =====================================================
+    // LOGIN
+    // =====================================================
+
     @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody LoginRequest request) {
+    public ResponseEntity<?> login(
+            @RequestBody LoginRequest request
+    ) {
 
         boolean SKIP_OTP = true;
 
@@ -71,10 +79,73 @@ public class AuthController {
 
         return ResponseEntity
                 .status(HttpStatus.SERVICE_UNAVAILABLE)
-                .body(Map.of("message", "OTP login temporarily disabled"));
+                .body(Map.of(
+                        "message",
+                        "OTP login temporarily disabled"
+                ));
     }
 
-    /* ASSIGN USER ROLE */
+    // =====================================================
+    // STAFF ONBOARDING - ADMIN ONLY
+    // =====================================================
+
+    /**
+     * Creates a staff User, linked Staff profile and invitation.
+     *
+     * The administrator receives the invitation URL whether
+     * email delivery is enabled or not.
+     */
+    @PostMapping("/admin/staff")
+    public ResponseEntity<?> createStaffInvitation(
+            @RequestBody StaffInvitationRequest request
+    ) {
+
+        Map<String, Object> response =
+                staffOnboardingService.createStaffInvitation(request);
+
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(response);
+    }
+
+    // =====================================================
+    // VALIDATE STAFF INVITATION - PUBLIC
+    // =====================================================
+
+    @GetMapping("/invitations/validate")
+    public ResponseEntity<?> validateStaffInvitation(
+            @RequestParam("token") String token
+    ) {
+
+        return ResponseEntity.ok(
+                staffOnboardingService.validateInvitation(token)
+        );
+    }
+
+    // =====================================================
+    // COMPLETE STAFF INVITATION - PUBLIC
+    // =====================================================
+
+    @PostMapping("/invitations/complete")
+    public ResponseEntity<?> completeStaffInvitation(
+            @RequestBody CompleteInvitationRequest request
+    ) {
+
+        return ResponseEntity.ok(
+                staffOnboardingService.completeInvitation(request)
+        );
+    }
+
+    // =====================================================
+    // ROLE ASSIGNMENT
+    // =====================================================
+
+    /**
+     * Privileged staff roles must be assigned through the
+     * administrator staff invitation workflow.
+     *
+     * This endpoint is retained for compatibility, but cannot
+     * be used to bypass staff onboarding.
+     */
     @PutMapping("/users/{id}/role")
     public ResponseEntity<?> assignRole(
             @PathVariable Long id,
@@ -95,28 +166,50 @@ public class AuthController {
             );
         }
 
+        Role requestedRole;
+
         try {
-            Role role = Role.valueOf(
+            requestedRole = Role.valueOf(
                     roleName.trim().toUpperCase(Locale.ROOT)
             );
-
-            user.setRole(role);
-            userRepository.save(user);
-
-            return ResponseEntity.ok(Map.of(
-                    "message", "User role updated successfully",
-                    "userId", user.getId(),
-                    "role", user.getRole().name()
-            ));
-
         } catch (IllegalArgumentException ex) {
             return ResponseEntity.badRequest().body(
                     Map.of("message", "Invalid role supplied")
             );
         }
+
+        if (requestedRole != Role.APPLICANT) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(
+                    Map.of(
+                            "message",
+                            "Staff roles must be assigned through the staff invitation workflow."
+                    )
+            );
+        }
+
+        if (user.getRole() != Role.APPLICANT) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(
+                    Map.of(
+                            "message",
+                            "An existing staff role cannot be changed through this endpoint."
+                    )
+            );
+        }
+
+        return ResponseEntity.ok(Map.of(
+                "message",
+                "User already has the applicant role.",
+                "userId",
+                user.getId(),
+                "role",
+                user.getRole().name()
+        ));
     }
 
-    /* RESEND OTP */
+    // =====================================================
+    // SEND OTP
+    // =====================================================
+
     @PostMapping("/send-otp")
     public ResponseEntity<?> sendOtp(
             @RequestBody Map<String, String> request
@@ -135,7 +228,10 @@ public class AuthController {
         );
     }
 
-    /* VERIFY OTP */
+    // =====================================================
+    // VERIFY OTP
+    // =====================================================
+
     @PostMapping("/verify-otp")
     public ResponseEntity<?> verifyOtp(
             @RequestBody Map<String, String> request
@@ -163,20 +259,22 @@ public class AuthController {
             Authentication authentication
     ) {
 
-        if (authentication == null ||
-                !authentication.isAuthenticated() ||
-                "anonymousUser".equals(authentication.getPrincipal())) {
+        if (authentication == null
+                || !authentication.isAuthenticated()
+                || "anonymousUser".equals(authentication.getPrincipal())) {
 
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Map.of(
-                            "message", "Authentication required."
+                            "message",
+                            "Authentication required."
                     ));
         }
 
         if (image == null || image.isEmpty()) {
             return ResponseEntity.badRequest()
                     .body(Map.of(
-                            "message", "Please select an image."
+                            "message",
+                            "Please select an image."
                     ));
         }
 
@@ -188,34 +286,40 @@ public class AuthController {
                         "User not found."
                 ));
 
-        // Upload image to Cloudinary
         String imageUrl = cloudinaryStorage.upload(
                 image,
                 "credicore/users"
         );
 
-        // Save Cloudinary URL in users table
         user.setUserImageUrl(imageUrl);
         userRepository.save(user);
 
         return ResponseEntity.ok(Map.of(
-                "message", "Profile photo updated successfully.",
-                "userImageUrl", imageUrl
+                "message",
+                "Profile photo updated successfully.",
+                "userImageUrl",
+                imageUrl
         ));
     }
 
+    // =====================================================
+    // GET CURRENT AUTHENTICATED USER
+    // =====================================================
 
-    /**
-     * GET CURRENT AUTHENTICATED USER
-     */
     @GetMapping("/me")
     public ResponseEntity<?> getLoggedInUser(
             Authentication authentication
     ) {
-        if (authentication == null || !authentication.isAuthenticated()
+
+        if (authentication == null
+                || !authentication.isAuthenticated()
                 || "anonymousUser".equals(authentication.getPrincipal())) {
+
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("message", "Authentication required"));
+                    .body(Map.of(
+                            "message",
+                            "Authentication required"
+                    ));
         }
 
         return ResponseEntity.ok(
@@ -223,38 +327,54 @@ public class AuthController {
         );
     }
 
+    // =====================================================
+    // UPDATE AUTHENTICATED USER PROFILE
+    // =====================================================
 
-    /**
-     * UPDATE AUTHENTICATED USER PROFILE
-     */
     @PutMapping("/me")
     public ResponseEntity<?> updateLoggedInUser(
             @RequestBody Map<String, String> request,
             Authentication authentication
     ) {
-        if (authentication == null || !authentication.isAuthenticated()
+
+        if (authentication == null
+                || !authentication.isAuthenticated()
                 || "anonymousUser".equals(authentication.getPrincipal())) {
+
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("message", "Authentication required"));
+                    .body(Map.of(
+                            "message",
+                            "Authentication required"
+                    ));
         }
 
         return ResponseEntity.ok(
-                authService.updateUserDetails(authentication.getName(), request)
+                authService.updateUserDetails(
+                        authentication.getName(),
+                        request
+                )
         );
     }
 
-    /**
-     * CHANGE AUTHENTICATED USER PASSWORD
-     */
+    // =====================================================
+    // CHANGE AUTHENTICATED USER PASSWORD
+    // =====================================================
+
     @PutMapping("/change-password")
     public ResponseEntity<?> changePassword(
             @RequestBody Map<String, String> request,
             Authentication authentication
     ) {
-        if (authentication == null || !authentication.isAuthenticated()
+
+        if (authentication == null
+                || !authentication.isAuthenticated()
                 || "anonymousUser".equals(authentication.getPrincipal())) {
+
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("message", "Authentication required"));
+                    .body(Map.of(
+                            "message",
+                            "Authentication required"
+                    ));
         }
 
         authService.changePassword(
@@ -268,50 +388,96 @@ public class AuthController {
         );
     }
 
+    // =====================================================
+    // GET ALL USERS - SAFE RESPONSE
+    // =====================================================
 
-
-
-    /* GET ALL USERS */
     @GetMapping("/users/all")
     public ResponseEntity<?> getAllUsers() {
-        return ResponseEntity.ok(userRepository.findAll());
+
+        List<Map<String, Object>> users = userRepository.findAll()
+                .stream()
+                .map(this::toSafeUserResponse)
+                .toList();
+
+        return ResponseEntity.ok(users);
     }
 
-    /* GET PENDING USERS */
+    // =====================================================
+    // GET PENDING USERS - SAFE RESPONSE
+    // =====================================================
+
     @GetMapping("/users/pending")
     public ResponseEntity<?> getPendingUsers() {
 
         List<User> pending =
                 userRepository.findByStatus(AccountStatus.PENDING);
 
+        List<Map<String, Object>> safeUsers = pending.stream()
+                .map(this::toSafeUserResponse)
+                .toList();
+
         Map<String, Object> response = new HashMap<>();
-        response.put("count", pending.size());
-        response.put("pendingUsers", pending);
+
+        response.put("count", safeUsers.size());
+        response.put("pendingUsers", safeUsers);
 
         return ResponseEntity.ok(response);
     }
 
-    /* APPROVE USER */
+    // =====================================================
+    // APPROVE USER
+    // =====================================================
+
     @PutMapping("/approve/{id}")
-    public ResponseEntity<?> approveUser(@PathVariable Long id) {
+    public ResponseEntity<?> approveUser(
+            @PathVariable Long id
+    ) {
 
         User user = userRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "User not found"
+                ));
+
+        if (Boolean.FALSE.equals(user.getRegistrationCompleted())) {
+            return ResponseEntity.badRequest().body(
+                    Map.of(
+                            "success",
+                            false,
+                            "message",
+                            "This user must complete registration before approval."
+                    )
+            );
+        }
 
         user.setStatus(AccountStatus.APPROVED);
         userRepository.save(user);
 
         return ResponseEntity.ok(
-                Map.of("message", "User approved successfully")
+                Map.of(
+                        "success",
+                        true,
+                        "message",
+                        "User approved successfully."
+                )
         );
     }
 
-    /* REVERT USER */
+    // =====================================================
+    // REVERT USER
+    // =====================================================
+
     @PutMapping("/revert/{id}")
-    public ResponseEntity<?> revertUser(@PathVariable Long id) {
+    public ResponseEntity<?> revertUser(
+            @PathVariable Long id
+    ) {
 
         User user = userRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "User not found"
+                ));
 
         user.setStatus(AccountStatus.PENDING);
         userRepository.save(user);
@@ -321,9 +487,14 @@ public class AuthController {
         );
     }
 
-    /* DELETE USER */
+    // =====================================================
+    // DELETE USER
+    // =====================================================
+
     @DeleteMapping("/delete/{id}")
-    public ResponseEntity<?> deleteUser(@PathVariable Long id) {
+    public ResponseEntity<?> deleteUser(
+            @PathVariable Long id
+    ) {
 
         if (!userRepository.existsById(id)) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND)
@@ -332,10 +503,15 @@ public class AuthController {
 
         userRepository.deleteById(id);
 
-        return ResponseEntity.ok("User deleted successfully");
+        return ResponseEntity.ok(
+                "User deleted successfully"
+        );
     }
 
-    /* VERIFY ACCOUNT */
+    // =====================================================
+    // VERIFY ACCOUNT
+    // =====================================================
+
     @PostMapping("/verify-account")
     public ResponseEntity<?> verifyAccount(
             @RequestBody VerifyAccountRequest request
@@ -347,12 +523,17 @@ public class AuthController {
         );
 
         return ResponseEntity.ok(Map.of(
-                "verified", true,
-                "message", "Account verified successfully."
+                "verified",
+                true,
+                "message",
+                "Account verified successfully."
         ));
     }
 
-    /* FORGOT PASSWORD */
+    // =====================================================
+    // FORGOT PASSWORD
+    // =====================================================
+
     @PostMapping("/forgot-password")
     public ResponseEntity<?> forgotPassword(
             @RequestBody ForgotPasswordRequest request
@@ -367,5 +548,37 @@ public class AuthController {
         return ResponseEntity.ok(
                 Map.of("message", "Password reset successfully.")
         );
+    }
+
+    // =====================================================
+    // SAFE USER RESPONSE
+    // =====================================================
+
+    private Map<String, Object> toSafeUserResponse(User user) {
+
+        Map<String, Object> response = new HashMap<>();
+
+        response.put("id", user.getId());
+        response.put("name", user.getName());
+        response.put("email", user.getEmail());
+        response.put("phoneNumber", user.getPhoneNumber());
+        response.put("nationalId", user.getNationalId());
+
+        response.put(
+                "role",
+                user.getRole() == null ? null : user.getRole().name()
+        );
+
+        response.put(
+                "status",
+                user.getStatus() == null ? null : user.getStatus().name()
+        );
+
+        response.put(
+                "registrationCompleted",
+                user.getRegistrationCompleted()
+        );
+
+        return response;
     }
 }

@@ -3,11 +3,7 @@ package com.example.Credit.management.services;
 
 import com.example.Credit.management.DTO.TenantAccountSummaryResponse;
 import com.example.Credit.management.DTO.TenantRentStatementResponse;
-import com.example.Credit.management.Model.TenantLease;
-import com.example.Credit.management.Model.TenantPaymentAllocation;
-import com.example.Credit.management.Model.TenantRentCharge;
-import com.example.Credit.management.Model.TenantRentPayment;
-import com.example.Credit.management.Model.User;
+import com.example.Credit.management.Model.*;
 import com.example.Credit.management.Repository.TenantLeaseRepository;
 import com.example.Credit.management.Repository.TenantPaymentAllocationRepository;
 import com.example.Credit.management.Repository.TenantRentChargeRepository;
@@ -101,16 +97,10 @@ public class TenantAccountService {
 
         List<TenantRentPayment> payments =
                 paymentRepository
-                        .findByOwner_IdOrderByReceivedAtDesc(ownerId)
-                        .stream()
-                        .filter(p ->
-                                p.getLease() != null
-                                        && Objects.equals(
-                                        p.getLease().getId(),
-                                        lease.getId()
-                                )
-                        )
-                        .toList();
+                        .findByOwner_IdAndLease_IdOrderByReceivedAtDesc(
+                                ownerId,
+                                lease.getId()
+                        );
 
         // -----------------------------------------------------
         // TOTAL RENT CHARGED
@@ -158,35 +148,62 @@ public class TenantAccountService {
                 .filter(Objects::nonNull)
                 .reduce(ZERO, BigDecimal::add);
 
-        // -----------------------------------------------------
-        // POSTED PAYMENT IDS
-        // -----------------------------------------------------
+// -----------------------------------------------------
+// POSTED PAYMENT IDS
+// -----------------------------------------------------
 
         List<Long> postedPaymentIds = payments.stream()
                 .filter(p ->
-                        p.getStatus()
-                                == TenantRentPayment.PaymentStatus.POSTED
+                        p.getStatus() == TenantRentPayment.PaymentStatus.POSTED
                 )
                 .map(TenantRentPayment::getId)
                 .filter(Objects::nonNull)
                 .toList();
 
-        // -----------------------------------------------------
-        // PAYMENT ALLOCATIONS
-        // -----------------------------------------------------
+// -----------------------------------------------------
+// PAYMENT ALLOCATIONS
+// -----------------------------------------------------
 
         List<TenantPaymentAllocation> allocations =
                 postedPaymentIds.isEmpty()
                         ? List.of()
                         : allocationRepository
-                        .findByPayment_IdInOrderByIdAsc(
-                                postedPaymentIds
-                        );
+                        .findByPayment_Owner_IdAndPayment_Lease_IdOrderByIdAsc(
+                                ownerId,
+                                lease.getId()
+                        )
+                        .stream()
+                        .filter(a ->
+                                a.getPayment() != null
+                                        && a.getPayment().getStatus()
+                                        == TenantRentPayment.PaymentStatus.POSTED
+                        )
+                        .toList();
 
-        BigDecimal allocatedPayments = allocations.stream()
-                .map(TenantPaymentAllocation::getAmount)
-                .filter(Objects::nonNull)
-                .reduce(ZERO, BigDecimal::add);
+        BigDecimal allocatedPayments = ZERO;
+
+        for (TenantPaymentAllocation allocation : allocations) {
+
+            TenantRentCharge charge = allocation.getCharge();
+
+            if (charge == null
+                    || charge.getOwner() == null
+                    || charge.getLease() == null
+                    || !charge.getOwner().getId().equals(ownerId)
+                    || !charge.getLease().getId().equals(lease.getId())) {
+
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT,
+                        "A payment allocation has inconsistent ownership information."
+                );
+            }
+
+            if (allocation.getAmount() != null) {
+                allocatedPayments = allocatedPayments.add(
+                        allocation.getAmount()
+                );
+            }
+        }
 
         // -----------------------------------------------------
         // AVAILABLE CREDIT
@@ -307,16 +324,10 @@ public class TenantAccountService {
 
         List<TenantRentPayment> payments =
                 paymentRepository
-                        .findByOwner_IdOrderByReceivedAtDesc(owner.getId())
-                        .stream()
-                        .filter(p ->
-                                p.getLease() != null
-                                        && Objects.equals(
-                                        p.getLease().getId(),
-                                        leaseId
-                                )
-                        )
-                        .toList();
+                        .findByOwner_IdAndLease_IdOrderByReceivedAtDesc(
+                                owner.getId(),
+                                leaseId
+                        );
 
         List<TenantRentStatementResponse.Transaction> allTransactions =
                 new ArrayList<>();
@@ -514,17 +525,31 @@ public class TenantAccountService {
         );
     }
 
-    // =========================================================
-    // SECURITY: GET AUTHENTICATED OWNER
-    // =========================================================
-
     private User getOwner(String email) {
 
-        return userRepository.findByEmail(email)
+        if (email == null || email.isBlank()) {
+            throw new ResponseStatusException(
+                    HttpStatus.UNAUTHORIZED,
+                    "Authenticated user could not be identified."
+            );
+        }
+
+        User user = userRepository.findByEmail(email.trim())
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.UNAUTHORIZED,
-                        "Authenticated owner was not found."
+                        "Authenticated user was not found."
                 ));
+
+        if (user.getRole() != Role.TENANT_AGENT
+                && user.getRole() != Role.ADMIN) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "You are not authorized to access rental management."
+            );
+        }
+
+        return user;
     }
 
     // =========================================================

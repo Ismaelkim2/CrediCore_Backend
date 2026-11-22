@@ -15,6 +15,8 @@ import org.springframework.web.bind.annotation.*;
 import java.security.Principal;
 import java.time.LocalDate;
 import java.util.List;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 @RestController
 @RequestMapping("/api/tenant/rent")
@@ -93,6 +95,27 @@ public class TenantRentController {
             @RequestParam LocalDate to,
             Principal principal
     ) {
+        if (from == null || to == null) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Statement start and end dates are required."
+            );
+        }
+
+        if (from.isAfter(to)) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Start date cannot be after end date."
+            );
+        }
+
+        if (from.plusYears(5).isBefore(to)) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Statement period cannot exceed five years."
+            );
+        }
+
         return accountService.getStatement(
                 leaseId, from, to, principal.getName()
         );

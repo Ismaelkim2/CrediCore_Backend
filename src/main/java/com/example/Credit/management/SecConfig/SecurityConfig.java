@@ -6,9 +6,13 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
+
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -23,18 +27,25 @@ import java.util.List;
 public class SecurityConfig {
 
     @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+    @Bean
     public SecurityFilterChain filterChain(
             HttpSecurity http,
             JwtAuthenticationFilter jwtFilter
     ) throws Exception {
 
         http
-                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                .cors(cors ->
+                        cors.configurationSource(corsConfigurationSource())
+                )
                 .csrf(csrf -> csrf.disable())
 
                 .authorizeHttpRequests(auth -> auth
 
-                        // PUBLIC ENDPOINTS
+                        // PUBLIC AUTHENTICATION ENDPOINTS
                         .requestMatchers(
                                 "/api/auth/login",
                                 "/api/auth/register",
@@ -42,14 +53,32 @@ public class SecurityConfig {
                                 "/api/auth/verify-otp",
                                 "/api/auth/forgot-password",
                                 "/api/auth/verify-account",
+                                "/api/auth/invitations/validate",
+                                "/api/auth/invitations/complete",
                                 "/ws/**",
                                 "/uploads/**",
                                 "/api/accounts/image/**"
                         ).permitAll()
 
                         // ADMIN ONLY
-                        .requestMatchers("/api/auth/users/**")
-                        .hasRole("ADMIN")
+                        .requestMatchers(
+                                "/api/auth/users/**",
+                                "/api/auth/approve/**",
+                                "/api/auth/revert/**",
+                                "/api/auth/delete/**",
+                                "/api/auth/admin/**"
+                        ).hasRole("ADMIN")
+
+                        // STAFF DIRECTORY
+                        .requestMatchers(
+                                org.springframework.http.HttpMethod.POST,
+                                "/api/loans/staff"
+                        ).hasRole("ADMIN")
+
+                        .requestMatchers(
+                                org.springframework.http.HttpMethod.GET,
+                                "/api/loans/staff"
+                        ).hasAnyRole("ADMIN", "DATA_MANAGER")
 
                         // TENANT MANAGEMENT
                         .requestMatchers("/api/tenant/**")
@@ -89,11 +118,8 @@ public class SecurityConfig {
 
         config.setAllowedHeaders(List.of("*"));
 
-        config.setExposedHeaders(List.of(
-                "Authorization"
-        ));
+        config.setExposedHeaders(List.of("Authorization"));
 
-        // Required for credentialed cross-origin requests.
         config.setAllowCredentials(true);
 
         config.setMaxAge(3600L);

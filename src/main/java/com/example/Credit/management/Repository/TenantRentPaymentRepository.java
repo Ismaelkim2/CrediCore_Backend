@@ -63,4 +63,18 @@ public interface TenantRentPaymentRepository
             Long leaseId,
             TenantRentPayment.PaymentStatus status
     );
+
+    List<TenantRentPayment>
+    findByLease_IdAndOwner_IdAndStatusOrderByReceivedAtAsc(
+            Long leaseId,
+            Long ownerId,
+            TenantRentPayment.PaymentStatus status
+    );
+
+    List<TenantRentPayment>
+    findByOwner_IdAndLease_IdOrderByReceivedAtDesc(
+            Long ownerId,
+            Long leaseId
+    );
+
 }

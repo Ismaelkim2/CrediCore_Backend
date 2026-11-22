@@ -5,6 +5,8 @@ import lombok.*;
 
 import com.example.Credit.management.Model.Role;
 
+import java.time.LocalDateTime;
+
 
 @Entity
 @Data
@@ -37,4 +39,12 @@ public class User {
     private AccountStatus status;
 
     private String userImageUrl;
+
+    private Boolean registrationCompleted = false;
+
+    private String registrationTokenHash;
+
+    private LocalDateTime registrationTokenExpiry;
+
+    private LocalDateTime registrationCompletedAt;
 }

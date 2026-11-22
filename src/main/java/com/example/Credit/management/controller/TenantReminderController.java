@@ -28,14 +28,18 @@ public class TenantReminderController {
 
     public TenantReminderController(
             TenantReminderService service,
-            TenantRentReminderEligibilityService eligibilityService, AutomaticRentReminderService automaticRentReminderService
+            TenantRentReminderEligibilityService eligibilityService,
+            AutomaticRentReminderService automaticRentReminderService
     ) {
         this.service = service;
         this.eligibilityService = eligibilityService;
         this.automaticRentReminderService = automaticRentReminderService;
     }
 
-    // Create one reminder
+    // =====================================================
+    // CREATE ONE REMINDER
+    // =====================================================
+
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public TenantReminderResponse create(
@@ -45,7 +49,10 @@ public class TenantReminderController {
         return service.create(request, actor(authentication));
     }
 
-    // Create reminders for selected tenants
+    // =====================================================
+    // CREATE BULK REMINDERS
+    // =====================================================
+
     @PostMapping("/bulk")
     @ResponseStatus(HttpStatus.CREATED)
     public List<TenantReminderResponse> createBulk(
@@ -55,7 +62,10 @@ public class TenantReminderController {
         return service.createBulk(request, actor(authentication));
     }
 
-    // List reminders with pagination
+    // =====================================================
+    // LIST REMINDERS
+    // =====================================================
+
     @GetMapping
     public Page<TenantReminderResponse> list(
             Authentication authentication,
@@ -79,14 +89,19 @@ public class TenantReminderController {
         return service.list(actor(authentication), page, size);
     }
 
-    // Find tenants with rent reminders due.
+    // =====================================================
+    // ELIGIBLE RENT RECIPIENTS
     // Categories: ALL, DUE_SOON, DUE_TODAY, OVERDUE
+    // =====================================================
+
     @GetMapping("/eligible")
     public List<RentReminderCandidateResponse> eligibleRentRecipients(
             Authentication authentication,
             @RequestParam(defaultValue = "ALL") String category,
             @RequestParam(defaultValue = "7") int daysAhead
     ) {
+        validateDaysAhead(daysAhead);
+
         return eligibilityService.findEligible(
                 actor(authentication),
                 category,
@@ -94,13 +109,18 @@ public class TenantReminderController {
         );
     }
 
-    // Count distinct eligible tenants for the selected rent category.
+    // =====================================================
+    // COUNT ELIGIBLE RENT RECIPIENTS
+    // =====================================================
+
     @GetMapping("/eligible-count")
     public EligibleTenantCountResponse eligibleRentRecipientCount(
             Authentication authentication,
             @RequestParam(defaultValue = "ALL") String category,
             @RequestParam(defaultValue = "7") int daysAhead
     ) {
+        validateDaysAhead(daysAhead);
+
         int count = Math.toIntExact(
                 eligibilityService.findEligible(
                                 actor(authentication),
@@ -116,17 +136,20 @@ public class TenantReminderController {
         return new EligibleTenantCountResponse(count);
     }
 
-
+    // =====================================================
+    // AUTOMATIC RENT REMINDER GENERATION
+    // =====================================================
 
     @PostMapping("/auto-generate")
     public BulkReminderResultResponse generateRentReminders(
             Authentication authentication,
             @RequestParam(defaultValue = "ALL") String category,
             @RequestParam(defaultValue = "7") int daysAhead,
-            @RequestParam(
-                    defaultValue = "IN_APP"
-            ) TenantReminder.ReminderChannel channel
+            @RequestParam(defaultValue = "IN_APP")
+            TenantReminder.ReminderChannel channel
     ) {
+        validateDaysAhead(daysAhead);
+
         int created = automaticRentReminderService.generate(
                 actor(authentication),
                 category,
@@ -137,8 +160,10 @@ public class TenantReminderController {
         return new BulkReminderResultResponse(created);
     }
 
+    // =====================================================
+    // GET REMINDER BY ID
+    // =====================================================
 
-    // Get a reminder by ID
     @GetMapping("/{id}")
     public TenantReminderResponse get(
             @PathVariable Long id,
@@ -147,7 +172,10 @@ public class TenantReminderController {
         return service.get(id, actor(authentication));
     }
 
-    // Cancel a reminder
+    // =====================================================
+    // CANCEL REMINDER
+    // =====================================================
+
     @PostMapping("/{id}/cancel")
     public TenantReminderResponse cancel(
             @PathVariable Long id,
@@ -156,7 +184,10 @@ public class TenantReminderController {
         return service.cancel(id, actor(authentication));
     }
 
-    // Mark a reminder as followed up
+    // =====================================================
+    // MARK REMINDER AS FOLLOWED UP
+    // =====================================================
+
     @PostMapping("/{id}/follow-up")
     public TenantReminderResponse followUp(
             @PathVariable Long id,
@@ -165,7 +196,10 @@ public class TenantReminderController {
         return service.markFollowedUp(id, actor(authentication));
     }
 
-    // Request a retry for a failed reminder
+    // =====================================================
+    // RETRY FAILED REMINDER
+    // =====================================================
+
     @PostMapping("/{id}/retry")
     public TenantReminderResponse retry(
             @PathVariable Long id,
@@ -174,24 +208,9 @@ public class TenantReminderController {
         return service.requestRetry(id, actor(authentication));
     }
 
-    private String actor(Authentication authentication) {
-        if (authentication == null
-                || !authentication.isAuthenticated()
-                || authentication.getName() == null
-                || authentication.getName().isBlank()) {
-
-            throw new ResponseStatusException(
-                    HttpStatus.UNAUTHORIZED,
-                    "Authentication required."
-            );
-        }
-
-        return authentication.getName();
-    }
-
     // =====================================================
-// CALENDAR EVENTS
-// =====================================================
+    // CALENDAR EVENTS
+    // =====================================================
 
     @GetMapping("/calendar")
     public List<TenantReminderResponse> calendar(
@@ -199,15 +218,30 @@ public class TenantReminderController {
             @RequestParam LocalDate from,
             @RequestParam LocalDate to
     ) {
+        if (from == null || to == null || from.isAfter(to)) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "A valid calendar date range is required."
+            );
+        }
+
+        if (from.plusYears(1).isBefore(to)) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Calendar date range cannot exceed one year."
+            );
+        }
+
         return service.getCalendarEvents(
                 actor(authentication),
                 from,
-
-
                 to
         );
     }
 
+    // =====================================================
+    // UPDATE CALENDAR EVENT
+    // =====================================================
 
     @PutMapping("/{id}")
     public TenantReminderResponse update(
@@ -220,5 +254,39 @@ public class TenantReminderController {
                 request,
                 actor(authentication)
         );
+    }
+
+    // =====================================================
+    // AUTHENTICATION VALIDATION
+    // =====================================================
+
+    private String actor(Authentication authentication) {
+
+        if (authentication == null
+                || !authentication.isAuthenticated()
+                || authentication.getName() == null
+                || authentication.getName().isBlank()) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.UNAUTHORIZED,
+                    "Authentication required."
+            );
+        }
+
+        return authentication.getName().trim();
+    }
+
+    // =====================================================
+    // DAYS-AHEAD VALIDATION
+    // =====================================================
+
+    private void validateDaysAhead(int daysAhead) {
+
+        if (daysAhead < 0 || daysAhead > 365) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Days ahead must be between 0 and 365."
+            );
+        }
     }
 }
