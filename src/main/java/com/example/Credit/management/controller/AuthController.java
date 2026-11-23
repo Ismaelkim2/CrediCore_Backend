@@ -8,6 +8,7 @@ import com.example.Credit.management.services.AuthService;
 import com.example.Credit.management.services.CloudinaryImageStorageService;
 import com.example.Credit.management.services.StaffOnboardingService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -15,11 +16,11 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
-
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import org.springframework.transaction.annotation.Transactional;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -520,24 +521,65 @@ public class AuthController {
     }
 
     // =====================================================
-    // DELETE USER
-    // =====================================================
+// SUSPEND USER - ADMIN
+// =====================================================
 
-    @DeleteMapping("/delete/{id}")
-    public ResponseEntity<?> deleteUser(
-            @PathVariable Long id
-    ) {
-
-        if (!userRepository.existsById(id)) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(Map.of("error", "User not found"));
-        }
-
-        userRepository.deleteById(id);
+    @PutMapping("/suspend/{id}")
+    public ResponseEntity<?> suspendUser(@PathVariable Long id) {
 
         return ResponseEntity.ok(
-                "User deleted successfully"
+                authService.suspendUser(id)
         );
+    }
+
+
+// =====================================================
+// REACTIVATE USER - ADMIN
+// =====================================================
+
+    @PutMapping("/reactivate/{id}")
+    public ResponseEntity<?> reactivateUser(@PathVariable Long id) {
+
+        return ResponseEntity.ok(
+                authService.reactivateUser(id)
+        );
+    }
+
+// =====================================================
+// DELETE USER - SAFE PERMANENT DELETION
+// =====================================================
+
+    @DeleteMapping("/delete/{id}")
+    public ResponseEntity<?> deleteUser(@PathVariable Long id) {
+
+        try {
+
+            authService.permanentlyDeleteUser(id);
+
+            return ResponseEntity.ok(
+                    Map.of(
+                            "success", true,
+                            "message", "User deleted successfully."
+                    )
+            );
+
+        } catch (DataIntegrityViolationException ex) {
+
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(Map.of(
+                            "success", false,
+                            "message",
+                            "This user is linked to existing business records and cannot be permanently deleted. Suspend the account instead."
+                    ));
+
+        } catch (RuntimeException ex) {
+
+            return ResponseEntity.badRequest()
+                    .body(Map.of(
+                            "success", false,
+                            "message", ex.getMessage()
+                    ));
+        }
     }
 
     // =====================================================

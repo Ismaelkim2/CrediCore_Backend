@@ -3,6 +3,7 @@ package com.example.Credit.management.services;
 
 import com.example.Credit.management.Model.*;
 import com.example.Credit.management.Repository.AccountRepository;
+import com.example.Credit.management.Repository.StaffRepository;
 import com.example.Credit.management.Repository.UserRepository;
 import com.example.Credit.management.SecConfig.AuthResponse;
 import com.example.Credit.management.SecConfig.JwtUtil;
@@ -14,6 +15,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
@@ -41,6 +43,8 @@ public class AuthService {
 
     @Value("${twilio.phone.number:}")
     private String twilioPhoneNumber;
+
+    private final StaffRepository staffRepository;
 
     // Temporary OTP storage
     private static final Map<String, OtpData> otpStore =
@@ -506,35 +510,27 @@ public class AuthService {
         );
     }
 
-    // =========================================================
-    // CENTRAL LOGIN ELIGIBILITY CHECK
-    // =========================================================
-
     private void ensureLoginAllowed(User user) {
 
-        if (user.getStatus() != AccountStatus.APPROVED) {
+        if (user.getStatus() == AccountStatus.SUSPENDED) {
+            throw new AccountNotApprovedException(
+                    "Your account has been suspended. Please contact the administrator or confirm your subscription payment."
+            );
+        }
 
+        if (user.getStatus() != AccountStatus.APPROVED) {
             throw new AccountNotApprovedException(
                     "Account not approved. Please wait for admin approval."
             );
         }
 
         if (user.getRole() == null) {
-
             throw new AccountNotApprovedException(
                     "Account role has not been configured. Contact administrator."
             );
         }
 
-        /*
-         * Explicitly incomplete users cannot log in.
-         *
-         * NULL is temporarily accepted for compatibility with
-         * legacy users created before this field existed.
-         * Backfill legacy records before enforcing strict NOT NULL.
-         */
         if (Boolean.FALSE.equals(user.getRegistrationCompleted())) {
-
             throw new AccountNotApprovedException(
                     "Registration is incomplete. Please complete your registration invitation."
             );
@@ -818,5 +814,108 @@ public class AuthService {
         );
 
         userRepository.save(user);
+    }
+
+
+    // =========================================================
+// SUSPEND USER
+// =========================================================
+
+    @Transactional
+    public Map<String, Object> suspendUser(Long userId) {
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() ->
+                        new RuntimeException("User not found.")
+                );
+
+        if (user.getStatus() == AccountStatus.SUSPENDED) {
+            throw new IllegalArgumentException(
+                    "This account is already suspended."
+            );
+        }
+
+        if (user.getStatus() != AccountStatus.APPROVED) {
+            throw new IllegalArgumentException(
+                    "Only approved accounts can be suspended."
+            );
+        }
+
+        user.setStatus(AccountStatus.SUSPENDED);
+        userRepository.save(user);
+
+        return Map.of(
+                "success", true,
+                "message", "User account suspended successfully.",
+                "userId", user.getId(),
+                "status", user.getStatus().name()
+        );
+    }
+
+
+// =========================================================
+// REACTIVATE USER AFTER PAYMENT
+// =========================================================
+
+    @Transactional
+    public Map<String, Object> reactivateUser(Long userId) {
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() ->
+                        new RuntimeException("User not found.")
+                );
+
+        if (user.getStatus() == AccountStatus.APPROVED) {
+            throw new IllegalArgumentException(
+                    "This account is already active."
+            );
+        }
+
+        if (user.getStatus() != AccountStatus.SUSPENDED) {
+            throw new IllegalArgumentException(
+                    "Only suspended accounts can be reactivated."
+            );
+        }
+
+        if (Boolean.FALSE.equals(user.getRegistrationCompleted())) {
+            throw new IllegalArgumentException(
+                    "Registration must be completed before reactivation."
+            );
+        }
+
+        user.setStatus(AccountStatus.APPROVED);
+        userRepository.save(user);
+
+        return Map.of(
+                "success", true,
+                "message", "User account reactivated successfully.",
+                "userId", user.getId(),
+                "status", user.getStatus().name()
+        );
+    }
+
+
+// =========================================================
+// PERMANENTLY DELETE USER
+// =========================================================
+
+    @Transactional
+    public void permanentlyDeleteUser(Long userId) {
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() ->
+                        new RuntimeException("User not found.")
+                );
+
+        // Remove the linked staff profile first, if one exists.
+        staffRepository.findByUser_Id(userId)
+                .ifPresent(staffRepository::delete);
+
+        // Attempt to delete the central user record.
+        // Other protected database relationships may still prevent this.
+        userRepository.delete(user);
+
+        // Force database constraint checks before returning.
+        userRepository.flush();
     }
 }
