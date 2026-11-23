@@ -30,7 +30,7 @@ public class StaffOnboardingServiceImpl implements StaffOnboardingService {
     private final SendGridEmailService emailService;
     private final SecureRandom secureRandom = new SecureRandom();
 
-    @Value("${app.frontend.base-url:http://localhost:4200}")
+    @Value("${app.frontend.base-url:https://creditbank-frontend.onrender.com}")
     private String frontendBaseUrl;
 
     @Value("${app.frontend.staff-invitation-path:/staff-invitation}")
@@ -417,16 +417,32 @@ public class StaffOnboardingServiceImpl implements StaffOnboardingService {
     }
 
     // =====================================================
-    // BUILD INVITATION URL
-    // =====================================================
+// BUILD STAFF INVITATION URL
+// =====================================================
 
     private String buildInvitationUrl(String token) {
 
-        String baseUrl = frontendBaseUrl.replaceAll("/+$", "");
+        if (token == null || token.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Invitation token cannot be empty."
+            );
+        }
 
-        String path = invitationPath.startsWith("/")
-                ? invitationPath
-                : "/" + invitationPath;
+        String baseUrl = frontendBaseUrl.trim()
+                .replaceAll("/+$", "");
+
+        String path = invitationPath.trim();
+
+        if (!path.startsWith("/")) {
+            path = "/" + path;
+        }
+
+        // Prevent accidental query strings or fragments in the configured path.
+        if (path.contains("?") || path.contains("#")) {
+            throw new IllegalStateException(
+                    "Staff invitation path must not contain query parameters."
+            );
+        }
 
         String encodedToken = URLEncoder.encode(
                 token,
